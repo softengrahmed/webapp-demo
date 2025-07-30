@@ -510,6 +510,19 @@ jobs:
           echo "Database endpoint: $DB_ENDPOINT"
           echo "Database available: $DB_STATUS"
           
+          # Create environment variables JSON file
+          cat > env-vars.json << EOF
+          {
+            "Variables": {
+              "DB_HOST": "$DB_ENDPOINT",
+              "DB_USER": "webappuser",
+              "DB_PASSWORD": "$DB_PASSWORD",
+              "DB_NAME": "postgres",
+              "DB_AVAILABLE": "$DB_STATUS"
+            }
+          }
+          EOF
+          
           # Check if function exists
           if aws lambda get-function --function-name ${{ env.LAMBDA_FUNCTION_NAME }} >/dev/null 2>&1; then
             echo "Updating existing Lambda function..."
@@ -554,7 +567,7 @@ jobs:
               --zip-file fileb://lambda-deployment.zip \
               --timeout 30 \
               --memory-size 512 \
-              --environment-variables DB_HOST="$DB_ENDPOINT",DB_USER=webappuser,DB_PASSWORD="$DB_PASSWORD",DB_NAME=postgres,DB_AVAILABLE="$DB_STATUS"
+              --environment file://env-vars.json
           fi
           
           # Create function URL for public access
@@ -701,7 +714,7 @@ jobs:
           
           # Set bucket policy for public read access
           aws s3api put-bucket-policy --bucket ${{ env.S3_BUCKET }} --policy '{
-            "Version": "2012-10-17",
+            "Version": "2012-17",
             "Statement": [
               {
                 "Sid": "PublicReadGetObject",
