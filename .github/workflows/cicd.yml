@@ -37,6 +37,7 @@ jobs:
       should_proceed: ${{ steps.validation.outputs.should_proceed }}
       cost_estimate: ${{ steps.cost_check.outputs.estimate }}
       has_aws_credentials: ${{ steps.aws_check.outputs.has_credentials }}
+      has_db_password: ${{ steps.db_check.outputs.has_password }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -50,6 +51,17 @@ jobs:
           else
             echo "has_credentials=false" >> $GITHUB_OUTPUT
             echo "⚠️ AWS credentials not configured - AWS operations will be skipped"
+          fi
+
+      - name: Check Database Password
+        id: db_check
+        run: |
+          if [[ -n "${{ secrets.DB_PASSWORD }}" ]]; then
+            echo "has_password=true" >> $GITHUB_OUTPUT
+            echo "✅ Database password is configured"
+          else
+            echo "has_password=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Database password not configured - will use default"
           fi
 
       - name: Validate Repository Structure
@@ -327,9 +339,17 @@ jobs:
 
       - name: Setup RDS PostgreSQL (Free Tier)
         id: rds_setup
-        if: ${{ secrets.DB_PASSWORD != '' }}
         run: |
           echo "Setting up RDS PostgreSQL instance..."
+          
+          # Use database password if available, otherwise use default
+          DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+          if [[ -z "$DB_PASSWORD" ]]; then
+            DB_PASSWORD="defaultpass123"
+            echo "⚠️ Using default database password"
+          else
+            echo "✅ Using configured database password"
+          fi
           
           # Check if RDS instance already exists
           if aws rds describe-db-instances --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} >/dev/null 2>&1; then
@@ -342,7 +362,7 @@ jobs:
               --db-instance-class db.t2.micro \
               --engine postgres \
               --master-username webappuser \
-              --master-user-password ${{ secrets.DB_PASSWORD }} \
+              --master-user-password "$DB_PASSWORD" \
               --allocated-storage 20 \
               --publicly-accessible \
               --backup-retention-period 0 \
@@ -359,17 +379,11 @@ jobs:
           echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
           echo "✅ Database setup completed"
 
-      - name: Skip Database Setup
-        if: ${{ secrets.DB_PASSWORD == '' }}
-        run: |
-          echo "⚠️ DB_PASSWORD secret not configured - skipping database setup"
-          echo "endpoint=localhost" >> $GITHUB_OUTPUT
-
   # Lambda Deployment Phase (Conditional)
   lambda_deployment:
     name: 'Backend API Deployment (Lambda)'
     runs-on: ubuntu-latest
-    needs: [build, pre_build_validation]
+    needs: [build, pre_build_validation, database_setup]
     if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
     outputs:
       api_url: ${{ steps.lambda_deploy.outputs.function_url }}
@@ -460,6 +474,12 @@ jobs:
         run: |
           echo "Deploying Lambda function..."
           
+          # Prepare database password for environment variables
+          DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+          if [[ -z "$DB_PASSWORD" ]]; then
+            DB_PASSWORD="defaultpass123"
+          fi
+          
           # Check if function exists
           if aws lambda get-function --function-name ${{ env.LAMBDA_FUNCTION_NAME }} >/dev/null 2>&1; then
             echo "Updating existing Lambda function..."
@@ -507,7 +527,7 @@ jobs:
               --environment Variables="{
                 DB_HOST=${{ needs.database_setup.outputs.db_endpoint || 'localhost' }},
                 DB_USER=webappuser,
-                DB_PASSWORD=${{ secrets.DB_PASSWORD || 'defaultpass' }},
+                DB_PASSWORD=${DB_PASSWORD},
                 DB_NAME=postgres
               }"
           fi
@@ -535,7 +555,7 @@ jobs:
   frontend_deployment:
     name: 'Frontend Deployment (S3)'
     runs-on: ubuntu-latest
-    needs: [build, pre_build_validation]
+    needs: [build, pre_build_validation, lambda_deployment]
     if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
     outputs:
       website_url: ${{ steps.s3_deploy.outputs.website_url }}
