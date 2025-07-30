@@ -546,6 +546,9 @@ jobs:
             
             ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
             
+            # Create environment variables as a single-line JSON string
+            ENV_VARS="{\"DB_HOST\":\"${DB_ENDPOINT}\",\"DB_USER\":\"webappuser\",\"DB_PASSWORD\":\"${DB_PASSWORD}\",\"DB_NAME\":\"postgres\",\"DB_AVAILABLE\":\"${DB_STATUS}\"}"
+            
             aws lambda create-function \
               --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
               --runtime nodejs18.x \
@@ -554,13 +557,7 @@ jobs:
               --zip-file fileb://lambda-deployment.zip \
               --timeout 30 \
               --memory-size 512 \
-              --environment Variables="{
-                \"DB_HOST\":\"${DB_ENDPOINT}\",
-                \"DB_USER\":\"webappuser\",
-                \"DB_PASSWORD\":\"${DB_PASSWORD}\",
-                \"DB_NAME\":\"postgres\",
-                \"DB_AVAILABLE\":\"${DB_STATUS}\"
-              }"
+              --environment Variables="$ENV_VARS"
           fi
           
           # Create function URL for public access
