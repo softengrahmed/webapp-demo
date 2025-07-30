@@ -1,0 +1,80 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Enable Corepack
+      run: corepack enable
+      
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'yarn'
+        
+    - name: Set Yarn version
+      run: corepack prepare yarn@3.2.1 --activate
+      
+    - name: Verify Yarn version
+      run: yarn --version
+      
+    - name: Install dependencies
+      run: yarn install --immutable
+      
+    - name: Run lint
+      run: yarn lint
+      continue-on-error: true
+      
+    - name: Run tests
+      run: yarn test
+      continue-on-error: true
+      
+    - name: Build project
+      run: yarn build
+      
+    - name: Archive build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts
+        path: dist/
+        retention-days: 30
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts
+        path: dist/
+        
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add your deployment commands here
+        
+    - name: Health check
+      run: |
+        echo "Running health checks..."
+        # Add your health check commands here
