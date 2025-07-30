@@ -371,7 +371,7 @@ jobs:
               --publicly-accessible \
               --backup-retention-period 0 \
               --no-multi-az \
-              --storage-encrypted false
+              --no-storage-encrypted
             
             # Wait for RDS instance to be available
             echo "Waiting for RDS instance to be available..."
@@ -529,10 +529,10 @@ jobs:
               --timeout 30 \
               --memory-size 512 \
               --environment Variables="{
-                DB_HOST=${{ needs.database_setup.outputs.db_endpoint || 'localhost' }},
-                DB_USER=webappuser,
-                DB_PASSWORD=${DB_PASSWORD},
-                DB_NAME=postgres
+                \"DB_HOST\":\"${{ needs.database_setup.outputs.db_endpoint || 'localhost' }}\",
+                \"DB_USER\":\"webappuser\",
+                \"DB_PASSWORD\":\"${DB_PASSWORD}\",
+                \"DB_NAME\":\"postgres\"
               }"
           fi
           
