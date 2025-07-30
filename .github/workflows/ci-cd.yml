@@ -510,9 +510,6 @@ jobs:
           echo "Database endpoint: $DB_ENDPOINT"
           echo "Database available: $DB_STATUS"
           
-          # Create properly formatted JSON for environment variables
-          ENV_JSON=$(printf '{"DB_HOST":"%s","DB_USER":"webappuser","DB_PASSWORD":"%s","DB_NAME":"postgres","DB_AVAILABLE":"%s"}' "$DB_ENDPOINT" "$DB_PASSWORD" "$DB_STATUS")
-          
           # Check if function exists
           if aws lambda get-function --function-name ${{ env.LAMBDA_FUNCTION_NAME }} >/dev/null 2>&1; then
             echo "Updating existing Lambda function..."
@@ -557,7 +554,7 @@ jobs:
               --zip-file fileb://lambda-deployment.zip \
               --timeout 30 \
               --memory-size 512 \
-              --environment "Variables=$ENV_JSON"
+              --environment-variables DB_HOST="$DB_ENDPOINT",DB_USER=webappuser,DB_PASSWORD="$DB_PASSWORD",DB_NAME=postgres,DB_AVAILABLE="$DB_STATUS"
           fi
           
           # Create function URL for public access
