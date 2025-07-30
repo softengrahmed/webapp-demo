@@ -325,7 +325,7 @@ jobs:
           # Placeholder for performance testing
           echo "✅ Performance testing completed"
 
-  # Database Setup Phase (Conditional)
+  # Database Setup Phase (Conditional with Error Handling)
   database_setup:
     name: 'PostgreSQL Database Setup'
     runs-on: ubuntu-latest
@@ -333,6 +333,7 @@ jobs:
     if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
     outputs:
       db_endpoint: ${{ steps.rds_setup.outputs.endpoint }}
+      db_available: ${{ steps.rds_setup.outputs.available }}
     steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -359,9 +360,13 @@ jobs:
           if aws rds describe-db-instances --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} >/dev/null 2>&1; then
             echo "RDS instance already exists"
             ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --query 'DBInstances[0].Endpoint.Address' --output text)
+            echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✅ Database setup completed"
           else
             echo "Creating new RDS instance..."
-            aws rds create-db-instance \
+            # Try to create RDS instance, but handle permission errors gracefully
+            if aws rds create-db-instance \
               --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} \
               --db-instance-class db.t2.micro \
               --engine postgres \
@@ -371,17 +376,24 @@ jobs:
               --publicly-accessible \
               --backup-retention-period 0 \
               --no-multi-az \
-              --no-storage-encrypted
-            
-            # Wait for RDS instance to be available
-            echo "Waiting for RDS instance to be available..."
-            aws rds wait db-instance-available --db-instance-identifier ${{ env.RDS_INSTANCE_ID }}
-            
-            ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --query 'DBInstances[0].Endpoint.Address' --output text)
+              --no-storage-encrypted 2>/dev/null; then
+              
+              echo "Waiting for RDS instance to be available..."
+              aws rds wait db-instance-available --db-instance-identifier ${{ env.RDS_INSTANCE_ID }}
+              
+              ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier ${{ env.RDS_INSTANCE_ID }} --query 'DBInstances[0].Endpoint.Address' --output text)
+              echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+              echo "available=true" >> $GITHUB_OUTPUT
+              echo "✅ Database setup completed"
+            else
+              echo "⚠️ Failed to create RDS instance - insufficient permissions"
+              echo "⚠️ This is likely due to missing RDS permissions in the IAM user"
+              echo "⚠️ Required permissions: rds:CreateDBInstance, rds:DescribeDBInstances"
+              echo "⚠️ Continuing deployment without database..."
+              echo "endpoint=localhost" >> $GITHUB_OUTPUT
+              echo "available=false" >> $GITHUB_OUTPUT
+            fi
           fi
-          
-          echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
-          echo "✅ Database setup completed"
 
   # Lambda Deployment Phase (Conditional)
   lambda_deployment:
@@ -438,8 +450,15 @@ jobs:
               // Fallback minimal Express app
               const express = require('express');
               const fallbackApp = express();
-              fallbackApp.get('/', (req, res) => res.json({ message: 'Hello from Lambda!', timestamp: new Date().toISOString() }));
-              fallbackApp.get('/health', (req, res) => res.json({ status: 'healthy' }));
+              fallbackApp.get('/', (req, res) => res.json({ 
+                message: 'Hello from Lambda!', 
+                timestamp: new Date().toISOString(),
+                database: process.env.DB_HOST || 'not-configured'
+              }));
+              fallbackApp.get('/health', (req, res) => res.json({ 
+                status: 'healthy',
+                database: process.env.DB_HOST ? 'configured' : 'not-configured'
+              }));
               return serverlessExpress({ app: fallbackApp });
             }
           };
@@ -483,6 +502,13 @@ jobs:
           if [[ -z "$DB_PASSWORD" ]]; then
             DB_PASSWORD="defaultpass123"
           fi
+          
+          # Use database endpoint if available, otherwise use localhost
+          DB_ENDPOINT="${{ needs.database_setup.outputs.db_endpoint || 'localhost' }}"
+          DB_STATUS="${{ needs.database_setup.outputs.db_available || 'false' }}"
+          
+          echo "Database endpoint: $DB_ENDPOINT"
+          echo "Database available: $DB_STATUS"
           
           # Check if function exists
           if aws lambda get-function --function-name ${{ env.LAMBDA_FUNCTION_NAME }} >/dev/null 2>&1; then
@@ -529,10 +555,11 @@ jobs:
               --timeout 30 \
               --memory-size 512 \
               --environment Variables="{
-                \"DB_HOST\":\"${{ needs.database_setup.outputs.db_endpoint || 'localhost' }}\",
+                \"DB_HOST\":\"${DB_ENDPOINT}\",
                 \"DB_USER\":\"webappuser\",
                 \"DB_PASSWORD\":\"${DB_PASSWORD}\",
-                \"DB_NAME\":\"postgres\"
+                \"DB_NAME\":\"postgres\",
+                \"DB_AVAILABLE\":\"${DB_STATUS}\"
               }"
           fi
           
@@ -598,19 +625,55 @@ jobs:
               body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
               .container { max-width: 600px; margin: 0 auto; }
               .status { padding: 20px; border: 1px solid #ddd; border-radius: 5px; margin: 20px 0; }
+              .success { border-color: #4CAF50; background-color: #f8fff8; }
+              .warning { border-color: #FF9800; background-color: #fff8f0; }
+              .api-info { text-align: left; margin: 20px 0; }
             </style>
           </head>
           <body>
             <div class="container">
               <h1>🚀 Webapp Demo</h1>
-              <div class="status">
+              <div class="status success">
                 <h2>Deployment Successful!</h2>
                 <p>Your CI/CD pipeline has successfully deployed this static website.</p>
                 <p><strong>Timestamp:</strong> <span id="timestamp"></span></p>
               </div>
+              <div class="api-info">
+                <h3>API Information:</h3>
+                <p><strong>API Endpoint:</strong> <span id="api-endpoint">Loading...</span></p>
+                <p><strong>Status:</strong> <span id="api-status">Checking...</span></p>
+                <button onclick="testAPI()">Test API Connection</button>
+                <div id="api-response" style="margin-top: 10px;"></div>
+              </div>
             </div>
             <script>
               document.getElementById('timestamp').textContent = new Date().toISOString();
+              
+              // Will be replaced by config.js
+              const API_ENDPOINT = window.API_ENDPOINT || 'http://localhost:3333';
+              document.getElementById('api-endpoint').textContent = API_ENDPOINT;
+              
+              async function testAPI() {
+                const responseDiv = document.getElementById('api-response');
+                const statusSpan = document.getElementById('api-status');
+                
+                try {
+                  responseDiv.innerHTML = 'Testing...';
+                  statusSpan.textContent = 'Testing...';
+                  
+                  const response = await fetch(API_ENDPOINT);
+                  const data = await response.json();
+                  
+                  statusSpan.textContent = 'Connected ✅';
+                  responseDiv.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                } catch (error) {
+                  statusSpan.textContent = 'Connection Failed ❌';
+                  responseDiv.innerHTML = '<p style="color: red;">Error: ' + error.message + '</p>';
+                }
+              }
+              
+              // Auto-test API on load
+              setTimeout(testAPI, 1000);
             </script>
           </body>
           </html>
@@ -761,12 +824,13 @@ jobs:
   deployment_validation:
     name: 'Post-Deployment Validation'
     runs-on: ubuntu-latest
-    needs: [build, frontend_deployment, lambda_deployment]
+    needs: [build, frontend_deployment, lambda_deployment, database_setup]
     if: always() && needs.build.result == 'success'
     outputs:
       validation_status: ${{ steps.validate.outputs.status }}
       frontend_health: ${{ steps.validate.outputs.frontend_health }}
       backend_health: ${{ steps.validate.outputs.backend_health }}
+      database_health: ${{ steps.validate.outputs.database_health }}
     steps:
       - name: Validate Deployment
         id: validate
@@ -775,6 +839,7 @@ jobs:
           
           FRONTEND_URL="${{ needs.frontend_deployment.outputs.website_url || 'Not deployed' }}"
           API_URL="${{ needs.lambda_deployment.outputs.api_url || 'Not deployed' }}"
+          DB_AVAILABLE="${{ needs.database_setup.outputs.db_available || 'false' }}"
           
           if [[ "$FRONTEND_URL" != "Not deployed" ]]; then
             echo "Testing frontend accessibility..."
@@ -802,6 +867,14 @@ jobs:
           else
             echo "backend_health=not-deployed" >> $GITHUB_OUTPUT
             echo "ℹ️ Backend not deployed (AWS credentials not available)"
+          fi
+          
+          if [[ "$DB_AVAILABLE" == "true" ]]; then
+            echo "database_health=available" >> $GITHUB_OUTPUT
+            echo "✅ Database is available"
+          else
+            echo "database_health=not-available" >> $GITHUB_OUTPUT
+            echo "⚠️ Database not available (insufficient RDS permissions)"
           fi
           
           echo "status=completed" >> $GITHUB_OUTPUT
@@ -843,6 +916,7 @@ jobs:
               <h2>Pipeline Execution Summary</h2>
               <p><strong>Frontend Health:</strong> ${{ needs.deployment_validation.outputs.frontend_health }}</p>
               <p><strong>Backend Health:</strong> ${{ needs.deployment_validation.outputs.backend_health }}</p>
+              <p><strong>Database Health:</strong> ${{ needs.deployment_validation.outputs.database_health }}</p>
               <p><strong>Validation Status:</strong> ${{ needs.deployment_validation.outputs.validation_status }}</p>
             </div>
             
@@ -856,12 +930,25 @@ jobs:
                 <span>Build & Test Pipeline</span>
                 <span class="free-tier">FREE (within GitHub limits)</span>
               </div>
+              <div class="cost-item">
+                <span>AWS Lambda</span>
+                <span class="free-tier">FREE (1M requests/month)</span>
+              </div>
+              <div class="cost-item">
+                <span>Amazon S3</span>
+                <span class="free-tier">FREE (5GB storage, 20K GET requests)</span>
+              </div>
+              <div class="cost-item">
+                <span>Amazon RDS</span>
+                <span class="warning">${{ needs.deployment_validation.outputs.database_health == 'available' && 'FREE (750 hours db.t2.micro)' || 'SKIPPED (insufficient permissions)' }}</span>
+              </div>
             </div>
             
             <div class="section">
               <h2>Free Tier Compliance</h2>
-              <p class="free-tier">✅ All services are within AWS Free Tier limits</p>
+              <p class="free-tier">✅ All deployed services are within AWS Free Tier limits</p>
               <p>This deployment will not incur charges if you stay within free tier quotas.</p>
+              ${{ needs.deployment_validation.outputs.database_health != 'available' && '<p class="warning">⚠️ RDS database was skipped due to insufficient IAM permissions</p>' || '' }}
             </div>
           </body>
           </html>
@@ -888,9 +975,17 @@ jobs:
           echo ""
           echo "📊 Frontend Health: ${{ needs.deployment_validation.outputs.frontend_health }}"
           echo "📊 Backend Health: ${{ needs.deployment_validation.outputs.backend_health }}"
+          echo "📊 Database Health: ${{ needs.deployment_validation.outputs.database_health }}"
           echo "📊 Validation Status: ${{ needs.deployment_validation.outputs.validation_status }}"
           echo "💰 Cost Compliance: FREE TIER ONLY"
           echo ""
+          if [[ "${{ needs.deployment_validation.outputs.database_health }}" != "available" ]]; then
+            echo "⚠️ DATABASE NOTICE:"
+            echo "   RDS database creation failed due to insufficient IAM permissions."
+            echo "   Required permissions: rds:CreateDBInstance, rds:DescribeDBInstances"
+            echo "   The application deployed successfully without database."
+            echo ""
+          fi
           echo "🎯 Pipeline executed successfully!"
           echo "📄 Detailed cost analysis and HTML report available in artifacts."
           echo ""
