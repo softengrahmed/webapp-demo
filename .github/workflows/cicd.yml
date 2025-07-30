@@ -36,9 +36,21 @@ jobs:
     outputs:
       should_proceed: ${{ steps.validation.outputs.should_proceed }}
       cost_estimate: ${{ steps.cost_check.outputs.estimate }}
+      has_aws_credentials: ${{ steps.aws_check.outputs.has_credentials }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Check AWS Credentials
+        id: aws_check
+        run: |
+          if [[ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ]]; then
+            echo "has_credentials=true" >> $GITHUB_OUTPUT
+            echo "✅ AWS credentials are available"
+          else
+            echo "has_credentials=false" >> $GITHUB_OUTPUT
+            echo "⚠️ AWS credentials not configured - AWS operations will be skipped"
+          fi
 
       - name: Validate Repository Structure
         id: validation
@@ -78,17 +90,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'yarn'
 
-      - name: Check AWS Credentials
-        run: |
-          echo "Checking AWS credentials availability..."
-          if [[ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]]; then
-            echo "⚠️ AWS_ACCESS_KEY_ID secret not configured - AWS operations will be skipped"
-          else
-            echo "✅ AWS credentials appear to be configured"
-          fi
-
       - name: Configure AWS Credentials (if available)
-        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -310,8 +313,8 @@ jobs:
   database_setup:
     name: 'PostgreSQL Database Setup'
     runs-on: ubuntu-latest
-    needs: testing
-    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.DB_PASSWORD != '' }}
+    needs: [testing, pre_build_validation]
+    if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
     outputs:
       db_endpoint: ${{ steps.rds_setup.outputs.endpoint }}
     steps:
@@ -324,6 +327,7 @@ jobs:
 
       - name: Setup RDS PostgreSQL (Free Tier)
         id: rds_setup
+        if: ${{ secrets.DB_PASSWORD != '' }}
         run: |
           echo "Setting up RDS PostgreSQL instance..."
           
@@ -355,12 +359,18 @@ jobs:
           echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
           echo "✅ Database setup completed"
 
+      - name: Skip Database Setup
+        if: ${{ secrets.DB_PASSWORD == '' }}
+        run: |
+          echo "⚠️ DB_PASSWORD secret not configured - skipping database setup"
+          echo "endpoint=localhost" >> $GITHUB_OUTPUT
+
   # Lambda Deployment Phase (Conditional)
   lambda_deployment:
     name: 'Backend API Deployment (Lambda)'
     runs-on: ubuntu-latest
-    needs: [build]
-    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+    needs: [build, pre_build_validation]
+    if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
     outputs:
       api_url: ${{ steps.lambda_deploy.outputs.function_url }}
     steps:
@@ -525,8 +535,8 @@ jobs:
   frontend_deployment:
     name: 'Frontend Deployment (S3)'
     runs-on: ubuntu-latest
-    needs: [build]
-    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+    needs: [build, pre_build_validation]
+    if: needs.pre_build_validation.outputs.has_aws_credentials == 'true'
     outputs:
       website_url: ${{ steps.s3_deploy.outputs.website_url }}
     steps:
@@ -679,8 +689,8 @@ jobs:
   monitoring_setup:
     name: 'CloudWatch Monitoring Setup'
     runs-on: ubuntu-latest
-    needs: [frontend_deployment, lambda_deployment]
-    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && !failure() }}
+    needs: [frontend_deployment, lambda_deployment, pre_build_validation]
+    if: needs.pre_build_validation.outputs.has_aws_credentials == 'true' && !failure()
     steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -727,7 +737,7 @@ jobs:
   deployment_validation:
     name: 'Post-Deployment Validation'
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, frontend_deployment, lambda_deployment]
     if: always() && needs.build.result == 'success'
     outputs:
       validation_status: ${{ steps.validate.outputs.status }}
