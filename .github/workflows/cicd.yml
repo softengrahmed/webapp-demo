@@ -212,10 +212,11 @@ jobs:
         fi
         
         # Check for AWS secrets (non-blocking)
-        if [[ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]]; then
-          echo "⚠️  AWS_ACCESS_KEY_ID not configured"
-        else
+        echo "🔑 Checking AWS credentials availability..."
+        if [[ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ]]; then
           echo "✅ AWS credentials configured"
+        else
+          echo "⚠️  AWS_ACCESS_KEY_ID not configured (will skip AWS operations)"
         fi
         
         echo "valid=$VALIDATION_PASSED" >> $GITHUB_OUTPUT
@@ -1712,7 +1713,7 @@ jobs:
         fetch-depth: 0
     
     - name: 🔑 Configure AWS Credentials (if available)
-      if: secrets.AWS_ACCESS_KEY_ID != ''
+      continue-on-error: true
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
