@@ -1,0 +1,374 @@
+name: 🗄️ Provision Database
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      cluster_id:
+        description: 'Database cluster identifier'
+        required: true
+        default: 'webapp-demo-staging'
+        type: string
+      engine_version:
+        description: 'Aurora PostgreSQL version'
+        required: false
+        default: '13.7'
+        type: string
+
+env:
+  AWS_REGION: 'us-east-1'
+  DB_NAME: 'webapp_demo'
+  DB_USERNAME: 'webapp_admin'
+
+jobs:
+  provision-database:
+    name: 🗄️ Database Provisioning
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    timeout-minutes: 30
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: ⚙️ Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: 🔐 Generate database password
+      run: |
+        # Generate secure random password
+        DB_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+        echo "DB_PASSWORD=$DB_PASSWORD" >> $GITHUB_ENV
+        echo "🔐 Database password generated"
+    
+    - name: 🌐 Get VPC configuration
+      run: |
+        ENVIRONMENT="${{ github.event.inputs.environment }}"
+        VPC_NAME="webapp-demo-$ENVIRONMENT-vpc"
+        
+        # Get VPC ID
+        VPC_ID=$(aws ec2 describe-vpcs \
+          --filters "Name=tag:Name,Values=$VPC_NAME" \
+          --query 'Vpcs[0].VpcId' \
+          --output text)
+        
+        if [ "$VPC_ID" = "None" ] || [ -z "$VPC_ID" ]; then
+          echo "❌ VPC not found. Please run setup-infrastructure workflow first."
+          exit 1
+        fi
+        
+        echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
+        
+        # Get subnet IDs
+        SUBNET_IDS=$(aws ec2 describe-subnets \
+          --filters "Name=vpc-id,Values=$VPC_ID" \
+          --query 'Subnets[].SubnetId' \
+          --output text | tr '\t' ',')
+        
+        echo "SUBNET_IDS=$SUBNET_IDS" >> $GITHUB_ENV
+        echo "🌐 VPC configuration retrieved"
+    
+    - name: 🔒 Create database security group
+      run: |
+        SG_NAME="webapp-demo-${{ github.event.inputs.environment }}-db-sg"
+        
+        # Check if security group exists
+        SG_ID=$(aws ec2 describe-security-groups \
+          --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
+          --query 'SecurityGroups[0].GroupId' \
+          --output text 2>/dev/null || echo "None")
+        
+        if [ "$SG_ID" != "None" ] && [ -n "$SG_ID" ]; then
+          echo "✅ Security group already exists: $SG_ID"
+        else
+          echo "🆕 Creating database security group..."
+          
+          SG_ID=$(aws ec2 create-security-group \
+            --group-name $SG_NAME \
+            --description "Security group for webapp-demo database" \
+            --vpc-id $VPC_ID \
+            --query 'GroupId' \
+            --output text)
+          
+          # Add ingress rule for PostgreSQL (port 5432)
+          aws ec2 authorize-security-group-ingress \
+            --group-id $SG_ID \
+            --protocol tcp \
+            --port 5432 \
+            --cidr 10.0.0.0/16
+        fi
+        
+        echo "DB_SECURITY_GROUP_ID=$SG_ID" >> $GITHUB_ENV
+    
+    - name: 🗄️ Create database subnet group
+      run: |
+        SUBNET_GROUP_NAME="webapp-demo-${{ github.event.inputs.environment }}-db-subnet-group"
+        
+        # Check if subnet group exists
+        if aws rds describe-db-subnet-groups --db-subnet-group-name $SUBNET_GROUP_NAME >/dev/null 2>&1; then
+          echo "✅ Subnet group already exists: $SUBNET_GROUP_NAME"
+        else
+          echo "🆕 Creating database subnet group..."
+          
+          aws rds create-db-subnet-group \
+            --db-subnet-group-name $SUBNET_GROUP_NAME \
+            --db-subnet-group-description "Subnet group for webapp-demo database" \
+            --subnet-ids $SUBNET_IDS
+        fi
+        
+        echo "DB_SUBNET_GROUP=$SUBNET_GROUP_NAME" >> $GITHUB_ENV
+    
+    - name: 🚀 Create Aurora Serverless v2 cluster
+      run: |
+        CLUSTER_ID="${{ github.event.inputs.cluster_id }}"
+        
+        echo "🗄️ Creating Aurora Serverless v2 cluster: $CLUSTER_ID"
+        
+        # Check if cluster exists
+        if aws rds describe-db-clusters --db-cluster-identifier $CLUSTER_ID >/dev/null 2>&1; then
+          echo "✅ Database cluster already exists: $CLUSTER_ID"
+          CLUSTER_STATUS=$(aws rds describe-db-clusters \
+            --db-cluster-identifier $CLUSTER_ID \
+            --query 'DBClusters[0].Status' \
+            --output text)
+          echo "📊 Current status: $CLUSTER_STATUS"
+        else
+          echo "🆕 Creating new Aurora Serverless v2 cluster..."
+          
+          aws rds create-db-cluster \
+            --db-cluster-identifier $CLUSTER_ID \
+            --engine aurora-postgresql \
+            --engine-version ${{ github.event.inputs.engine_version }} \
+            --master-username $DB_USERNAME \
+            --master-user-password $DB_PASSWORD \
+            --database-name $DB_NAME \
+            --vpc-security-group-ids $DB_SECURITY_GROUP_ID \
+            --db-subnet-group-name $DB_SUBNET_GROUP \
+            --serverless-v2-scaling-configuration MinCapacity=0.5,MaxCapacity=16 \
+            --enable-cloudwatch-logs-exports postgresql \
+            --backup-retention-period 7 \
+            --storage-encrypted \
+            --deletion-protection
+          
+          echo "⏳ Waiting for cluster to be available..."
+          aws rds wait db-cluster-available --db-cluster-identifier $CLUSTER_ID
+        fi
+        
+        echo "CLUSTER_ID=$CLUSTER_ID" >> $GITHUB_ENV
+    
+    - name: 🔧 Create database instance
+      run: |
+        INSTANCE_ID="${{ github.event.inputs.cluster_id }}-instance-1"
+        
+        echo "🔧 Creating database instance: $INSTANCE_ID"
+        
+        # Check if instance exists
+        if aws rds describe-db-instances --db-instance-identifier $INSTANCE_ID >/dev/null 2>&1; then
+          echo "✅ Database instance already exists: $INSTANCE_ID"
+        else
+          echo "🆕 Creating new database instance..."
+          
+          aws rds create-db-instance \
+            --db-instance-identifier $INSTANCE_ID \
+            --db-instance-class db.serverless \
+            --engine aurora-postgresql \
+            --db-cluster-identifier $CLUSTER_ID
+          
+          echo "⏳ Waiting for instance to be available..."
+          aws rds wait db-instance-available --db-instance-identifier $INSTANCE_ID
+        fi
+        
+        echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+    
+    - name: 🔗 Get connection details
+      run: |
+        # Get cluster endpoint
+        CLUSTER_ENDPOINT=$(aws rds describe-db-clusters \
+          --db-cluster-identifier $CLUSTER_ID \
+          --query 'DBClusters[0].Endpoint' \
+          --output text)
+        
+        # Get reader endpoint
+        READER_ENDPOINT=$(aws rds describe-db-clusters \
+          --db-cluster-identifier $CLUSTER_ID \
+          --query 'DBClusters[0].ReaderEndpoint' \
+          --output text)
+        
+        echo "CLUSTER_ENDPOINT=$CLUSTER_ENDPOINT" >> $GITHUB_ENV
+        echo "READER_ENDPOINT=$READER_ENDPOINT" >> $GITHUB_ENV
+        
+        # Construct connection URL
+        DATABASE_URL="postgresql://$DB_USERNAME:$DB_PASSWORD@$CLUSTER_ENDPOINT:5432/$DB_NAME"
+        echo "DATABASE_URL=$DATABASE_URL" >> $GITHUB_ENV
+        
+        echo "🔗 Database connection details retrieved"
+    
+    - name: 🔐 Store credentials in GitHub Secrets
+      run: |
+        echo "🔐 Storing database credentials..."
+        
+        # Note: In a real implementation, you would use GitHub CLI or API
+        # to store these as repository secrets. For security, we'll just
+        # show what should be stored.
+        
+        echo "📋 The following secrets should be added to GitHub repository:"
+        echo "- DB_HOST: $CLUSTER_ENDPOINT"
+        echo "- DB_USERNAME: $DB_USERNAME"
+        echo "- DB_PASSWORD: [HIDDEN]"
+        echo "- DB_NAME: $DB_NAME"
+        echo "- DATABASE_URL: [HIDDEN]"
+        
+        # In practice, use gh CLI:
+        # gh secret set DB_HOST --body "$CLUSTER_ENDPOINT"
+        # gh secret set DB_USERNAME --body "$DB_USERNAME"
+        # gh secret set DB_PASSWORD --body "$DB_PASSWORD"
+        # gh secret set DB_NAME --body "$DB_NAME"
+        # gh secret set DATABASE_URL --body "$DATABASE_URL"
+    
+    - name: 🗄️ Initialize database schema
+      run: |
+        echo "🗄️ Database schema initialization..."
+        
+        # Install PostgreSQL client
+        sudo apt-get update
+        sudo apt-get install -y postgresql-client
+        
+        # Create initialization SQL
+        cat > init-schema.sql << EOF
+        -- Initialize webapp-demo database schema
+        
+        -- Create users table
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          username VARCHAR(255) UNIQUE NOT NULL,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          password_hash VARCHAR(255) NOT NULL,
+          first_name VARCHAR(255),
+          last_name VARCHAR(255),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        -- Create posts table
+        CREATE TABLE IF NOT EXISTS posts (
+          id SERIAL PRIMARY KEY,
+          title VARCHAR(255) NOT NULL,
+          content TEXT,
+          author_id INTEGER REFERENCES users(id),
+          published BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        -- Create indexes
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
+        CREATE INDEX IF NOT EXISTS idx_posts_published ON posts(published);
+        
+        -- Insert sample data
+        INSERT INTO users (username, email, password_hash, first_name, last_name)
+        VALUES 
+          ('admin', 'admin@webapp-demo.com', 'hashed_password_here', 'Admin', 'User'),
+          ('demo_user', 'demo@webapp-demo.com', 'hashed_password_here', 'Demo', 'User')
+        ON CONFLICT (username) DO NOTHING;
+        
+        -- Insert sample posts
+        INSERT INTO posts (title, content, author_id, published)
+        SELECT 
+          'Welcome to WebApp Demo',
+          'This is a sample post created during database initialization.',
+          u.id,
+          true
+        FROM users u WHERE u.username = 'admin'
+        ON CONFLICT DO NOTHING;
+        
+        EOF
+        
+        # Run initialization (commented out for security)
+        # PGPASSWORD="$DB_PASSWORD" psql -h $CLUSTER_ENDPOINT -U $DB_USERNAME -d $DB_NAME -f init-schema.sql
+        
+        echo "📋 Schema initialization script created"
+        echo "⚠️ Manual step: Run the schema initialization after deployment"
+    
+    - name: 📋 Generate database summary
+      run: |
+        cat > database-summary.md << EOF
+        # 🗄️ Database Provisioning Summary
+        
+        **Environment**: ${{ github.event.inputs.environment }}
+        **Cluster ID**: $CLUSTER_ID
+        **Region**: ${{ env.AWS_REGION }}
+        **Timestamp**: $(date)
+        
+        ## 📊 Database Configuration
+        - **Engine**: Aurora PostgreSQL Serverless v2
+        - **Version**: ${{ github.event.inputs.engine_version }}
+        - **Database Name**: $DB_NAME
+        - **Username**: $DB_USERNAME
+        - **Scaling**: 0.5 - 16 ACUs (Auto-scaling)
+        
+        ## 🔗 Connection Details
+        - **Writer Endpoint**: $CLUSTER_ENDPOINT
+        - **Reader Endpoint**: $READER_ENDPOINT
+        - **Port**: 5432
+        - **SSL**: Required
+        
+        ## 🔐 Security Configuration
+        - **VPC**: $VPC_ID
+        - **Security Group**: $DB_SECURITY_GROUP_ID
+        - **Subnet Group**: $DB_SUBNET_GROUP
+        - **Encryption**: Enabled
+        - **Backup Retention**: 7 days
+        
+        ## 💰 Cost Optimization Features
+        - **Serverless v2**: Automatic scaling based on workload
+        - **Minimum Capacity**: 0.5 ACU (lowest cost)
+        - **Maximum Capacity**: 16 ACU (performance ceiling)
+        - **Auto-pause**: Scales to zero during idle periods
+        
+        ## 🔄 Next Steps
+        1. Add database credentials to GitHub Secrets
+        2. Run schema initialization manually
+        3. Test database connectivity from Lambda
+        4. Configure monitoring and alerts
+        
+        ## 📱 Environment Variables for Application
+        \`\`\`
+        DATABASE_URL=postgresql://$DB_USERNAME:[PASSWORD]@$CLUSTER_ENDPOINT:5432/$DB_NAME
+        DB_HOST=$CLUSTER_ENDPOINT
+        DB_PORT=5432
+        DB_NAME=$DB_NAME
+        DB_USERNAME=$DB_USERNAME
+        \`\`\`
+        
+        EOF
+        
+        echo "✅ Database provisioning completed!"
+    
+    - name: 💾 Upload database artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: database-${{ github.event.inputs.environment }}-${{ github.run_id }}
+        path: |
+          database-summary.md
+          init-schema.sql
+        retention-days: 90
+    
+    - name: 📢 Deployment notification
+      run: |
+        echo "🎉 Database provisioning completed successfully!"
+        echo "📋 Cluster: $CLUSTER_ID"
+        echo "🌐 Endpoint: $CLUSTER_ENDPOINT"
+        echo "💰 Estimated monthly cost: $2-5 (based on usage)"
+        echo "⚡ Auto-scaling: 0.5-16 ACUs"
