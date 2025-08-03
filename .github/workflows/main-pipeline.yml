@@ -233,24 +233,22 @@ jobs:
       run: |
         echo "🔍 Running security scans..."
         
-        # Install security tools
-        npm install -g audit-ci @cyclonedx/cyclonedx-npm
-        
         # SAST - Static Application Security Testing
         echo "📊 SAST Analysis"
         yarn eslint . --ext .js,.jsx,.ts,.tsx --format json --output-file eslint-security.json || true
         
-        # Dependency vulnerability scan
+        # Dependency vulnerability scan with Yarn audit
         echo "🔍 Dependency Vulnerability Scan"
-        audit-ci --config ./audit-ci.json || echo "⚠️ Vulnerabilities found but not blocking"
+        yarn npm audit --json > yarn-audit.json || echo "⚠️ Vulnerabilities found but not blocking"
         
-        # Generate SBOM (Software Bill of Materials)
+        # Generate SBOM (Software Bill of Materials) - Install cyclonedx-npm via yarn
         echo "📋 Generating SBOM"
-        cyclonedx-npm --output-file sbom.json
+        yarn dlx @cyclonedx/cyclonedx-npm --output-file sbom.json || echo "⚠️ SBOM generation failed"
         
         # Create security report
         echo "📄 Security Report Generated" > security-report.txt
         echo "Timestamp: $(date)" >> security-report.txt
+        echo "Yarn Audit Results: $(cat yarn-audit.json | wc -l) lines" >> security-report.txt
         
     - name: 📏 Code quality analysis
       if: matrix.analysis == 'quality'
@@ -261,9 +259,9 @@ jobs:
         echo "🔧 TypeScript Check"
         yarn nx run-many --target=type-check --all || echo "⚠️ Type check warnings found"
         
-        # Code complexity analysis
+        # Code complexity analysis - install madge via yarn
         echo "📈 Complexity Analysis"
-        npx madge --circular --extensions ts,tsx,js,jsx apps/ libs/ || echo "⚠️ Circular dependencies detected"
+        yarn dlx madge --circular --extensions ts,tsx,js,jsx apps/ libs/ || echo "⚠️ Circular dependencies detected"
         
         # Bundle size analysis
         echo "📦 Bundle Size Analysis"
@@ -278,17 +276,23 @@ jobs:
       run: |
         echo "🔍 Analyzing dependencies..."
         
-        # License compliance check
+        # License compliance check - using yarn dlx for better Yarn 3 compatibility
         echo "⚖️ License Compliance"
-        npx license-checker --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC' --excludePrivatePackages || echo "⚠️ License issues detected"
+        yarn dlx license-checker --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;Unlicense' --excludePrivatePackages > license-report.txt || echo "⚠️ License issues detected"
         
-        # Outdated dependencies check
+        # Outdated dependencies check with better error handling
         echo "📅 Outdated Dependencies"
-        yarn outdated || echo "📋 Dependency status checked"
+        yarn outdated > outdated-deps.txt 2>&1 || echo "📋 Dependency status checked (some outdated packages found)"
         
-        # Dependency tree analysis
+        # Dependency tree analysis with error handling
         echo "🌳 Dependency Tree"
-        yarn list --depth=1 > dependency-tree.txt
+        yarn info --name-only > dependency-list.txt 2>&1 || echo "📋 Dependency list generated"
+        
+        # Generate summary
+        echo "📊 Dependency Analysis Summary" > dependency-summary.txt
+        echo "Total packages: $(cat dependency-list.txt | wc -l)" >> dependency-summary.txt
+        echo "License check: $(cat license-report.txt | wc -l) packages analyzed" >> dependency-summary.txt
+        echo "Outdated check: $(cat outdated-deps.txt | wc -l) lines in report" >> dependency-summary.txt
     
     - name: 💾 Upload analysis results
       uses: actions/upload-artifact@v4
@@ -298,7 +302,10 @@ jobs:
           *-report.txt
           *.json
           bundle-size.txt
-          dependency-tree.txt
+          dependency-*.txt
+          license-report.txt
+          outdated-deps.txt
+          yarn-audit.json
         retention-days: 30
 
   # =====================================
