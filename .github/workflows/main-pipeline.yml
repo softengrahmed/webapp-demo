@@ -876,15 +876,16 @@ jobs:
       run: |
         echo "🔍 Running enhanced AWS permissions verification..."
         
-        # Get AWS identity with retry
+        # Get AWS identity with retry - fixed JSON parsing
         get_aws_identity() {
           local attempt=$1
-          echo "🔄 AWS identity check attempt $attempt/3"
+          # Output retry message to stderr to avoid JSON contamination
+          echo "🔄 AWS identity check attempt $attempt/3" >&2
           aws sts get-caller-identity --output json
         }
         
         for i in {1..3}; do
-          if AWS_IDENTITY=$(get_aws_identity $i); then
+          if AWS_IDENTITY=$(get_aws_identity $i 2>/dev/null); then
             echo "✅ AWS identity verified"
             break
           elif [ $i -eq 3 ]; then
@@ -965,22 +966,34 @@ jobs:
             return 1
           fi
           
-          # Step 3: Set bucket policy with retry
+          # Step 3: Set bucket policy with retry - FIXED JSON generation
           echo "🔓 Setting bucket policy for public access..."
+          
+          # Create the policy file with proper JSON formatting
           cat > bucket-policy.json << EOF
-        {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Sid": "PublicReadGetObject",
-              "Effect": "Allow",
-              "Principal": "*",
-              "Action": "s3:GetObject",
-              "Resource": "arn:aws:s3:::$bucket_name/*"
-            }
-          ]
-        }
-        EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicReadGetObject",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::${bucket_name}/*"
+    }
+  ]
+}
+EOF
+          
+          # Verify the JSON is valid before using it
+          if ! jq empty bucket-policy.json 2>/dev/null; then
+            echo "❌ Generated bucket policy JSON is invalid"
+            echo "Policy content:"
+            cat bucket-policy.json
+            return 1
+          fi
+          
+          echo "✅ Valid JSON policy generated"
           
           for i in {1..3}; do
             if aws s3api put-bucket-policy --bucket $bucket_name --policy file://bucket-policy.json; then
@@ -1006,68 +1019,70 @@ jobs:
             fi
           else
             echo "⚠️ No frontend build found, creating placeholder..."
+            # Create placeholder HTML with variable substitution
             mkdir -p placeholder-content
-            cat > placeholder-content/index.html << 'EOF'
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>WebApp Demo - Staging Deployed Successfully</title>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body { 
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    text-align: center; 
-                    padding: 50px; 
-                    margin: 0;
-                    min-height: 100vh;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                }
-                .container { 
-                    max-width: 600px; 
-                    background: rgba(255,255,255,0.1);
-                    padding: 40px;
-                    border-radius: 20px;
-                    backdrop-filter: blur(10px);
-                    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-                }
-                .success { color: #28a745; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-                .info { color: #e3f2fd; margin: 10px 0; }
-                .badge { 
-                    display: inline-block; 
-                    background: rgba(255,255,255,0.2); 
-                    padding: 5px 15px; 
-                    border-radius: 15px; 
-                    margin: 5px;
-                    font-size: 0.9em;
-                }
-                .timestamp { font-size: 0.8em; opacity: 0.8; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1 class="success">🎉 Deployment Successful!</h1>
-                <h2>WebApp Demo - Staging Environment</h2>
-                <div class="info">
-                    <div class="badge">Pipeline ID: ${{ github.run_id }}</div>
-                    <div class="badge">Branch: ${{ github.ref_name }}</div>
-                    <div class="badge">Environment: Staging</div>
-                </div>
-                <p class="info">Your intelligent CI/CD pipeline with auto-recovery is working perfectly!</p>
-                <p class="info">✅ AWS S3 bucket created and configured</p>
-                <p class="info">✅ Static website hosting enabled</p>
-                <p class="info">✅ Public access policy applied</p>
-                <p class="info">🚀 Ready for your React application deployment</p>
-                <div class="timestamp">Deployed: $(date -u)</div>
-                <div class="timestamp">Commit: ${{ github.sha }}</div>
-            </div>
-        </body>
-        </html>
-        EOF
+            DEPLOYMENT_TIME=$(date -u)
+            cat > placeholder-content/index.html << EOF
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebApp Demo - Staging Deployed Successfully</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center; 
+            padding: 50px; 
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container { 
+            max-width: 600px; 
+            background: rgba(255,255,255,0.1);
+            padding: 40px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        }
+        .success { color: #28a745; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+        .info { color: #e3f2fd; margin: 10px 0; }
+        .badge { 
+            display: inline-block; 
+            background: rgba(255,255,255,0.2); 
+            padding: 5px 15px; 
+            border-radius: 15px; 
+            margin: 5px;
+            font-size: 0.9em;
+        }
+        .timestamp { font-size: 0.8em; opacity: 0.8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="success">🎉 Deployment Successful!</h1>
+        <h2>WebApp Demo - Staging Environment</h2>
+        <div class="info">
+            <div class="badge">Pipeline: ${{ github.run_id }}</div>
+            <div class="badge">Branch: ${{ github.ref_name }}</div>
+            <div class="badge">Environment: Staging</div>
+        </div>
+        <p class="info">Your intelligent CI/CD pipeline with auto-recovery is working perfectly!</p>
+        <p class="info">✅ AWS S3 bucket created and configured</p>
+        <p class="info">✅ Static website hosting enabled</p>
+        <p class="info">✅ Public access policy applied</p>
+        <p class="info">🚀 Ready for your React application deployment</p>
+        <div class="timestamp">Deployed: ${DEPLOYMENT_TIME}</div>
+        <div class="timestamp">Commit: ${{ github.sha }}</div>
+    </div>
+</body>
+</html>
+EOF
             
             if aws s3 sync placeholder-content/ s3://$bucket_name/; then
               echo "✅ Placeholder content uploaded"
@@ -1094,35 +1109,35 @@ jobs:
           echo "❌ S3 bucket creation permissions not available"
           echo "🔧 REQUIRED IAM PERMISSIONS:"
           cat << 'EOF'
-        {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Action": [
-                "s3:CreateBucket",
-                "s3:DeleteBucket",
-                "s3:PutBucketWebsite",
-                "s3:PutBucketPolicy",
-                "s3:PutBucketAcl",
-                "s3:PutObject",
-                "s3:PutObjectAcl",
-                "s3:GetObject",
-                "s3:DeleteObject",
-                "s3:ListBucket"
-              ],
-              "Resource": [
-                "arn:aws:s3:::webapp-demo-*",
-                "arn:aws:s3:::webapp-demo-*/*",
-                "arn:aws:s3:::webappdemo-*",
-                "arn:aws:s3:::webappdemo-*/*",
-                "arn:aws:s3:::demo-app-*",
-                "arn:aws:s3:::demo-app-*/*"
-              ]
-            }
-          ]
-        }
-        EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:PutBucketWebsite",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketAcl",
+        "s3:PutObject",
+        "s3:PutObjectAcl",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::webapp-demo-*",
+        "arn:aws:s3:::webapp-demo-*/*",
+        "arn:aws:s3:::webappdemo-*",
+        "arn:aws:s3:::webappdemo-*/*",
+        "arn:aws:s3:::demo-app-*",
+        "arn:aws:s3:::demo-app-*/*"
+      ]
+    }
+  ]
+}
+EOF
           
           echo "FRONTEND_BUCKET=permission-error" >> $GITHUB_ENV
           echo "WEBSITE_URL=https://console.aws.amazon.com/iam/" >> $GITHUB_ENV
