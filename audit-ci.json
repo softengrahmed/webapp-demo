@@ -1,0 +1,25 @@
+{
+  "low": true,
+  "moderate": true,
+  "high": false,
+  "critical": false,
+  "report-type": "summary",
+  "advisories": [],
+  "allowlist": [],
+  "exclude": [
+    "GHSA-67hx-6x53-jw92",
+    "GHSA-93q8-gq69-wqmw",
+    "GHSA-fwr7-v2mv-hh25"
+  ],
+  "pass-enoaudit": true,
+  "show-found": true,
+  "show-not-found": false,
+  "registry": "https://registry.npmjs.org",
+  "retry": {
+    "count": 5,
+    "factor": 2,
+    "minTimeout": 10000,
+    "maxTimeout": 60000
+  },
+  "_description": "Audit CI configuration for webapp-demo pipeline. Configured to be non-blocking for Free Tier but still report vulnerabilities."
+}
