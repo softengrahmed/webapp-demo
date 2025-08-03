@@ -400,7 +400,7 @@ jobs:
         echo "✅ Cleanup report generated"
     
     - name: 📤 Upload cleanup artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: cleanup-report-${{ env.ENVIRONMENT }}-${{ github.run_id }}
         path: |
