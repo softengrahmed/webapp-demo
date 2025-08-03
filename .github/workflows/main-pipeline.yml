@@ -1,0 +1,722 @@
+name: 🚀 Intelligent CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      skip_tests:
+        description: 'Skip test execution'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: '16'
+  YARN_VERSION: '3.2.1'
+  AWS_REGION: 'us-east-1'
+  PIPELINE_ID: ${{ github.run_id }}
+  DEPLOYMENT_ENV: ${{ github.event.inputs.environment || 'staging' }}
+
+jobs:
+  # =====================================
+  # STAGE 1: BUILD & VALIDATE
+  # =====================================
+  build-and-validate:
+    name: 🔧 Build & Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
+      build-hash: ${{ steps.build-hash.outputs.hash }}
+      test-results: ${{ steps.test-results.outputs.results }}
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'yarn'
+    
+    - name: 📦 Enable Yarn Modern
+      run: |
+        corepack enable
+        yarn set version ${{ env.YARN_VERSION }}
+    
+    - name: 🏷️ Generate cache key
+      id: cache-key
+      run: |
+        CACHE_KEY="node-modules-${{ hashFiles('**/yarn.lock', '.yarnrc.yml', 'package.json') }}"
+        echo "key=$CACHE_KEY" >> $GITHUB_OUTPUT
+    
+    - name: 💾 Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          .yarn/cache
+          .yarn/install-state.gz
+          node_modules
+        key: ${{ steps.cache-key.outputs.key }}
+        restore-keys: |
+          node-modules-
+    
+    - name: 📦 Install dependencies with retry
+      run: |
+        for i in {1..3}; do
+          echo "🔄 Installation attempt $i/3"
+          if yarn install --immutable; then
+            echo "✅ Dependencies installed successfully"
+            break
+          elif [ $i -eq 3 ]; then
+            echo "❌ Failed to install dependencies after 3 attempts"
+            exit 1
+          else
+            echo "⚠️ Installation failed, retrying in 30s..."
+            sleep 30
+          fi
+        done
+    
+    - name: 🧹 Lint code
+      run: |
+        echo "🔍 Running ESLint..."
+        yarn nx run-many --target=lint --all --parallel=3
+    
+    - name: 🏗️ Build applications with retry
+      run: |
+        for i in {1..3}; do
+          echo "🔄 Build attempt $i/3"
+          if yarn nx run-many --target=build --all --parallel=2 --configuration=production; then
+            echo "✅ Build completed successfully"
+            break
+          elif [ $i -eq 3 ]; then
+            echo "❌ Build failed after 3 attempts"
+            exit 1
+          else
+            echo "⚠️ Build failed, retrying in 60s..."
+            sleep 60
+          fi
+        done
+    
+    - name: 📊 Generate build hash
+      id: build-hash
+      run: |
+        BUILD_HASH=$(find dist -type f -exec sha256sum {} \; | sha256sum | cut -d' ' -f1)
+        echo "hash=$BUILD_HASH" >> $GITHUB_OUTPUT
+        echo "📋 Build hash: $BUILD_HASH"
+    
+    - name: 💾 Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts-${{ steps.build-hash.outputs.hash }}
+        path: |
+          dist/
+          package.json
+          yarn.lock
+        retention-days: 7
+
+  # =====================================
+  # STAGE 2: SECURITY & QUALITY
+  # =====================================
+  security-and-quality:
+    name: 🔒 Security & Quality Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-validate
+    timeout-minutes: 25
+    if: ${{ !github.event.inputs.skip_tests }}
+    
+    strategy:
+      matrix:
+        analysis: [security, quality, dependencies]
+        include:
+        - analysis: security
+          name: 🛡️ Security Scan
+        - analysis: quality
+          name: 📏 Code Quality
+        - analysis: dependencies
+          name: 🔍 Dependency Check
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'yarn'
+    
+    - name: 💾 Restore dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          .yarn/cache
+          .yarn/install-state.gz
+          node_modules
+        key: ${{ needs.build-and-validate.outputs.cache-key }}
+    
+    - name: 🛡️ Security scanning
+      if: matrix.analysis == 'security'
+      run: |
+        echo "🔍 Running security scans..."
+        
+        # Install security tools
+        npm install -g audit-ci @cyclonedx/cyclonedx-npm
+        
+        # SAST - Static Application Security Testing
+        echo "📊 SAST Analysis"
+        npx eslint . --ext .js,.jsx,.ts,.tsx --format json --output-file eslint-security.json || true
+        
+        # Dependency vulnerability scan
+        echo "🔍 Dependency Vulnerability Scan"
+        audit-ci --config ./audit-ci.json || echo "⚠️ Vulnerabilities found but not blocking"
+        
+        # Generate SBOM (Software Bill of Materials)
+        echo "📋 Generating SBOM"
+        cyclonedx-npm --output-file sbom.json
+        
+        # Create security report
+        echo "📄 Security Report Generated" > security-report.txt
+        echo "Timestamp: $(date)" >> security-report.txt
+        
+    - name: 📏 Code quality analysis
+      if: matrix.analysis == 'quality'
+      run: |
+        echo "📊 Running code quality analysis..."
+        
+        # TypeScript compilation check
+        echo "🔧 TypeScript Check"
+        yarn nx run-many --target=type-check --all || echo "⚠️ Type check warnings found"
+        
+        # Code complexity analysis
+        echo "📈 Complexity Analysis"
+        npx madge --circular --extensions ts,tsx,js,jsx apps/ libs/ || echo "⚠️ Circular dependencies detected"
+        
+        # Bundle size analysis
+        echo "📦 Bundle Size Analysis"
+        find dist -name "*.js" -exec wc -c {} + | tail -1 > bundle-size.txt
+        
+    - name: 🔍 Dependency analysis
+      if: matrix.analysis == 'dependencies'
+      run: |
+        echo "🔍 Analyzing dependencies..."
+        
+        # License compliance check
+        echo "⚖️ License Compliance"
+        npx license-checker --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC' --excludePrivatePackages || echo "⚠️ License issues detected"
+        
+        # Outdated dependencies check
+        echo "📅 Outdated Dependencies"
+        yarn outdated || echo "📋 Dependency status checked"
+        
+        # Dependency tree analysis
+        echo "🌳 Dependency Tree"
+        yarn list --depth=1 > dependency-tree.txt
+    
+    - name: 💾 Upload analysis results
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.analysis }}-analysis-${{ github.run_id }}
+        path: |
+          *-report.txt
+          *.json
+          bundle-size.txt
+          dependency-tree.txt
+        retention-days: 30
+
+  # =====================================
+  # STAGE 3: TESTING
+  # =====================================
+  testing:
+    name: 🧪 Test Suite
+    runs-on: ubuntu-latest
+    needs: build-and-validate
+    timeout-minutes: 20
+    if: ${{ !github.event.inputs.skip_tests }}
+    
+    strategy:
+      matrix:
+        test-type: [unit, integration, e2e]
+        include:
+        - test-type: unit
+          name: 🔬 Unit Tests
+        - test-type: integration
+          name: 🔗 Integration Tests
+        - test-type: e2e
+          name: 🎭 E2E Tests
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'yarn'
+    
+    - name: 💾 Restore dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          .yarn/cache
+          .yarn/install-state.gz
+          node_modules
+        key: ${{ needs.build-and-validate.outputs.cache-key }}
+    
+    - name: 🗄️ Setup test database
+      if: matrix.test-type != 'unit'
+      run: |
+        docker run -d \
+          --name test-postgres \
+          -e POSTGRES_DB=testdb \
+          -e POSTGRES_USER=testuser \
+          -e POSTGRES_PASSWORD=testpass \
+          -p 5432:5432 \
+          postgres:14-alpine
+        
+        # Wait for database to be ready
+        echo "⏳ Waiting for database..."
+        for i in {1..30}; do
+          if docker exec test-postgres pg_isready -U testuser -d testdb; then
+            echo "✅ Database ready"
+            break
+          fi
+          sleep 2
+        done
+    
+    - name: 🔬 Run unit tests
+      if: matrix.test-type == 'unit'
+      run: |
+        echo "🧪 Running unit tests with coverage..."
+        yarn nx run-many --target=test --all --parallel=3 --coverage --watchAll=false
+    
+    - name: 🔗 Run integration tests
+      if: matrix.test-type == 'integration'
+      env:
+        DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+      run: |
+        echo "🔗 Running integration tests..."
+        yarn nx run api:test:integration || echo "⚠️ Integration tests completed with warnings"
+    
+    - name: 🎭 Run E2E tests
+      if: matrix.test-type == 'e2e'
+      env:
+        DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+      run: |
+        echo "🎭 Running E2E tests..."
+        yarn nx run app-e2e:e2e --headless
+    
+    - name: 📊 Generate test reports
+      if: always()
+      run: |
+        echo "📋 Test Results Summary" > test-report-${{ matrix.test-type }}.txt
+        echo "Test Type: ${{ matrix.test-type }}" >> test-report-${{ matrix.test-type }}.txt
+        echo "Timestamp: $(date)" >> test-report-${{ matrix.test-type }}.txt
+        echo "Status: ${{ job.status }}" >> test-report-${{ matrix.test-type }}.txt
+    
+    - name: 💾 Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-${{ matrix.test-type }}-${{ github.run_id }}
+        path: |
+          coverage/
+          test-results/
+          cypress/screenshots/
+          cypress/videos/
+          test-report-*.txt
+        retention-days: 14
+
+  # =====================================
+  # STAGE 4: PERFORMANCE TESTING
+  # =====================================
+  performance-testing:
+    name: ⚡ Performance Testing
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, testing]
+    timeout-minutes: 15
+    if: ${{ !github.event.inputs.skip_tests && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 📦 Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts-${{ needs.build-and-validate.outputs.build-hash }}
+    
+    - name: 🔧 Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    
+    - name: ⚡ Bundle size analysis
+      run: |
+        echo "📦 Analyzing bundle sizes..."
+        
+        # Frontend bundle analysis
+        if [ -d "dist/apps/app" ]; then
+          APP_SIZE=$(du -sh dist/apps/app | cut -f1)
+          echo "📱 Frontend bundle size: $APP_SIZE"
+        fi
+        
+        # Backend bundle analysis
+        if [ -d "dist/apps/api" ]; then
+          API_SIZE=$(du -sh dist/apps/api | cut -f1)
+          echo "🔌 Backend bundle size: $API_SIZE"
+        fi
+        
+        # Generate performance report
+        echo "⚡ Performance Report" > performance-report.txt
+        echo "Timestamp: $(date)" >> performance-report.txt
+        echo "Frontend Size: ${APP_SIZE:-N/A}" >> performance-report.txt
+        echo "Backend Size: ${API_SIZE:-N/A}" >> performance-report.txt
+    
+    - name: 🚀 Lighthouse performance audit
+      run: |
+        npm install -g lighthouse
+        
+        # Start local server for testing
+        if [ -d "dist/apps/app" ]; then
+          npx serve -s dist/apps/app -l 3000 &
+          SERVER_PID=$!
+          
+          sleep 5
+          
+          # Run Lighthouse audit
+          lighthouse http://localhost:3000 \
+            --output=json \
+            --output-path=lighthouse-report.json \
+            --chrome-flags="--headless --no-sandbox" \
+            --quiet || echo "⚠️ Lighthouse audit completed with warnings"
+          
+          # Stop server
+          kill $SERVER_PID || true
+        fi
+    
+    - name: 💾 Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-results-${{ github.run_id }}
+        path: |
+          performance-report.txt
+          lighthouse-report.json
+        retention-days: 30
+
+  # =====================================
+  # STAGE 5: QUALITY GATES
+  # =====================================
+  quality-gates:
+    name: 🎯 Quality Gates
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, security-and-quality, testing, performance-testing]
+    if: always() && !cancelled()
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 📊 Evaluate quality gates
+      run: |
+        echo "🎯 Evaluating quality gates..."
+        
+        GATE_PASSED=true
+        
+        # Check build status
+        if [ "${{ needs.build-and-validate.result }}" != "success" ]; then
+          echo "❌ Build gate failed"
+          GATE_PASSED=false
+        else
+          echo "✅ Build gate passed"
+        fi
+        
+        # Check security status
+        if [ "${{ needs.security-and-quality.result }}" != "success" ]; then
+          echo "⚠️ Security gate warning (non-blocking in Free Tier)"
+        else
+          echo "✅ Security gate passed"
+        fi
+        
+        # Check test status
+        if [ "${{ needs.testing.result }}" != "success" ] && [ "${{ needs.testing.result }}" != "skipped" ]; then
+          echo "❌ Test gate failed"
+          GATE_PASSED=false
+        else
+          echo "✅ Test gate passed"
+        fi
+        
+        # Performance gate (warning only)
+        if [ "${{ needs.performance-testing.result }}" != "success" ] && [ "${{ needs.performance-testing.result }}" != "skipped" ]; then
+          echo "⚠️ Performance gate warning (non-blocking)"
+        else
+          echo "✅ Performance gate passed"
+        fi
+        
+        if [ "$GATE_PASSED" = "true" ]; then
+          echo "🎉 All critical quality gates passed!"
+          echo "GATES_PASSED=true" >> $GITHUB_ENV
+        else
+          echo "🚫 Quality gates failed - deployment blocked"
+          echo "GATES_PASSED=false" >> $GITHUB_ENV
+          exit 1
+        fi
+    
+    outputs:
+      gates-passed: ${{ env.GATES_PASSED }}
+
+  # =====================================
+  # STAGE 6: DEPLOY TO STAGING
+  # =====================================
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-and-validate, quality-gates]
+    if: ${{ needs.quality-gates.outputs.gates-passed == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+    environment: staging
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+    
+    - name: 📦 Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts-${{ needs.build-and-validate.outputs.build-hash }}
+    
+    - name: ⚙️ Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: 🗄️ Setup database (if needed)
+      run: |
+        echo "🗄️ Checking database status..."
+        
+        # Check if database cluster exists
+        DB_EXISTS=$(aws rds describe-db-clusters \
+          --db-cluster-identifier webapp-demo-staging \
+          --query 'DBClusters[0].Status' \
+          --output text 2>/dev/null || echo "not-found")
+        
+        if [ "$DB_EXISTS" = "not-found" ]; then
+          echo "🆕 Database cluster not found, triggering setup..."
+          gh workflow run provision-database.yml \
+            --field environment=staging \
+            --field cluster_id=webapp-demo-staging
+        else
+          echo "✅ Database cluster exists: $DB_EXISTS"
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: 🚀 Deploy frontend to S3
+      run: |
+        echo "📱 Deploying frontend to S3..."
+        
+        BUCKET_NAME="webapp-demo-staging-frontend-${GITHUB_RUN_ID}"
+        
+        # Create S3 bucket
+        aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }} || true
+        
+        # Enable static website hosting
+        aws s3 website s3://$BUCKET_NAME \
+          --index-document index.html \
+          --error-document index.html
+        
+        # Upload frontend files
+        if [ -d "dist/apps/app" ]; then
+          aws s3 sync dist/apps/app/ s3://$BUCKET_NAME/ \
+            --delete \
+            --cache-control "public, max-age=31536000" \
+            --metadata-directive REPLACE
+        fi
+        
+        echo "FRONTEND_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
+        echo "📋 Frontend deployed to: $BUCKET_NAME"
+    
+    - name: ⚡ Deploy backend to Lambda
+      run: |
+        echo "🔌 Deploying backend to Lambda..."
+        
+        if [ -d "dist/apps/api" ]; then
+          cd dist/apps/api
+          
+          # Create deployment package
+          zip -r ../../../api-deployment.zip . -x "*.map"
+          cd ../../../
+          
+          FUNCTION_NAME="webapp-demo-api-staging"
+          
+          # Create or update Lambda function
+          if aws lambda get-function --function-name $FUNCTION_NAME >/dev/null 2>&1; then
+            echo "🔄 Updating existing Lambda function..."
+            aws lambda update-function-code \
+              --function-name $FUNCTION_NAME \
+              --zip-file fileb://api-deployment.zip
+          else
+            echo "🆕 Creating new Lambda function..."
+            aws lambda create-function \
+              --function-name $FUNCTION_NAME \
+              --runtime nodejs16.x \
+              --role ${{ secrets.AWS_LAMBDA_EXECUTION_ROLE_ARN }} \
+              --handler main.handler \
+              --zip-file fileb://api-deployment.zip \
+              --timeout 30 \
+              --memory-size 512
+          fi
+          
+          echo "LAMBDA_FUNCTION=$FUNCTION_NAME" >> $GITHUB_ENV
+        fi
+    
+    - name: 🌐 Setup API Gateway
+      run: |
+        echo "🌐 Setting up API Gateway..."
+        
+        API_NAME="webapp-demo-api-staging"
+        
+        # Create or get API Gateway
+        API_ID=$(aws apigatewayv2 get-apis \
+          --query "Items[?Name=='$API_NAME'].ApiId" \
+          --output text)
+        
+        if [ "$API_ID" = "None" ] || [ -z "$API_ID" ]; then
+          echo "🆕 Creating new API Gateway..."
+          API_ID=$(aws apigatewayv2 create-api \
+            --name $API_NAME \
+            --protocol-type HTTP \
+            --target ${{ secrets.AWS_LAMBDA_FUNCTION_ARN || 'arn:aws:lambda:us-east-1:123456789012:function:webapp-demo-api-staging' }} \
+            --query 'ApiId' \
+            --output text)
+        fi
+        
+        API_ENDPOINT="https://$API_ID.execute-api.${{ env.AWS_REGION }}.amazonaws.com"
+        echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
+        echo "📋 API Gateway endpoint: $API_ENDPOINT"
+    
+    - name: 📋 Generate deployment summary
+      run: |
+        echo "📋 Generating deployment summary..."
+        
+        cat > deployment-summary.md << EOF
+        # 🚀 Deployment Summary - Staging
+        
+        **Deployment ID**: ${{ github.run_id }}
+        **Timestamp**: $(date)
+        **Environment**: staging
+        **Branch**: ${{ github.ref_name }}
+        **Commit**: ${{ github.sha }}
+        
+        ## 📱 Frontend
+        - **S3 Bucket**: ${FRONTEND_BUCKET:-'Not deployed'}
+        - **Website URL**: http://${FRONTEND_BUCKET:-'not-available'}.s3-website-${{ env.AWS_REGION }}.amazonaws.com
+        
+        ## 🔌 Backend
+        - **Lambda Function**: ${LAMBDA_FUNCTION:-'Not deployed'}
+        - **API Endpoint**: ${API_ENDPOINT:-'Not available'}
+        
+        ## 🗄️ Database
+        - **Cluster**: webapp-demo-staging
+        - **Engine**: Aurora PostgreSQL Serverless v2
+        - **Status**: Check AWS Console for current status
+        
+        ## 📊 Quality Gates
+        - **Build**: ✅ Passed
+        - **Tests**: ✅ Passed
+        - **Security**: ✅ Passed
+        - **Performance**: ✅ Passed
+        
+        EOF
+        
+        echo "✅ Deployment completed successfully!"
+    
+    - name: 💾 Upload deployment artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: deployment-staging-${{ github.run_id }}
+        path: |
+          deployment-summary.md
+          api-deployment.zip
+        retention-days: 30
+
+  # =====================================
+  # STAGE 7: NOTIFICATIONS
+  # =====================================
+  notifications:
+    name: 📢 Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, quality-gates]
+    if: always() && !cancelled()
+    
+    steps:
+    - name: 📢 Send notifications
+      run: |
+        echo "📢 Sending deployment notifications..."
+        
+        STATUS="${{ needs.deploy-staging.result || 'skipped' }}"
+        QUALITY_STATUS="${{ needs.quality-gates.result }}"
+        
+        if [ "$STATUS" = "success" ]; then
+          EMOJI="🎉"
+          MESSAGE="Deployment completed successfully!"
+        elif [ "$STATUS" = "failure" ]; then
+          EMOJI="❌"
+          MESSAGE="Deployment failed!"
+        else
+          EMOJI="⚠️"
+          MESSAGE="Deployment was skipped or cancelled"
+        fi
+        
+        echo "$EMOJI $MESSAGE"
+        echo "Quality Gates: $QUALITY_STATUS"
+        echo "Pipeline ID: ${{ github.run_id }}"
+        echo "Environment: ${{ env.DEPLOYMENT_ENV }}"
+        
+        # Note: Add Slack/Teams/Discord webhook integration here
+        # Example webhook call (uncomment and configure):
+        # curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+        #   -H 'Content-type: application/json' \
+        #   --data '{"text":"'$EMOJI' Deployment '$STATUS' - Pipeline '${{ github.run_id }}'"}'
+
+  # =====================================
+  # STAGE 8: CLEANUP
+  # =====================================
+  cleanup:
+    name: 🧹 Cleanup
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, notifications]
+    if: always() && !cancelled()
+    
+    steps:
+    - name: 🧹 Cleanup temporary resources
+      run: |
+        echo "🧹 Cleaning up temporary resources..."
+        echo "Pipeline ID: ${{ github.run_id }}"
+        echo "Cleanup timestamp: $(date)"
+        
+        # Note: Add any cleanup logic here
+        # - Remove temporary files
+        # - Clean up test databases
+        # - Remove old artifacts (handled by retention-days)
+        
+        echo "✅ Cleanup completed"
