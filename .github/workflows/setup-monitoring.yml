@@ -345,12 +345,16 @@ jobs:
         
         **Environment**: $ENVIRONMENT
         **Region**: ${{ env.AWS_REGION }}
+
         **Budget Limit**: \$${{ github.event.inputs.budget_limit }}/month
+
         **Timestamp**: $(date)
         
         ## 💰 Budget Monitoring
         - **Budget Name**: ${BUDGET_NAME}
+
         - **Monthly Limit**: \$${{ github.event.inputs.budget_limit }}
+
         - **Alert Thresholds**: 80% (actual), 100% (forecasted)
         - **Notification Email**: ${{ secrets.NOTIFICATION_EMAIL || 'Not configured' }}
         
@@ -398,7 +402,9 @@ jobs:
         echo "✅ Monitoring setup completed!"
     
     - name: 💾 Upload monitoring artifacts
+
       uses: actions/upload-artifact@v4
+
       with:
         name: monitoring-${{ github.event.inputs.environment }}-${{ github.run_id }}
         path: |
@@ -410,7 +416,9 @@ jobs:
       run: |
         echo "🎉 Monitoring setup completed successfully!"
         echo "📊 Dashboard: ${DASHBOARD_NAME}"
+
         echo "💰 Budget: ${BUDGET_NAME} (\$${{ github.event.inputs.budget_limit }}/month)"
+
         echo "🚨 Alarms: Configured for Lambda, API Gateway, and RDS"
         echo "📱 Notifications: ${TOPIC_ARN:-'Configure email subscription manually'}"
         echo "⚡ Free tier optimized for cost efficiency"
