@@ -43,7 +43,6 @@ jobs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
-    
     - name: 🏗️ Create S3 bucket for frontend
       run: |
         ENVIRONMENT="${{ github.event.inputs.environment }}"
