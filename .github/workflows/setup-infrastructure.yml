@@ -40,9 +40,7 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
     
     - name: 🔧 Setup Terraform
-
       uses: hashicorp/setup-terraform@v3
-
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
     
@@ -66,6 +64,37 @@ jobs:
           aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }}
         fi
         
+        echo "FRONTEND_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
+    
+    - name: 🔐 Configure S3 Block Public Access
+      run: |
+        BUCKET_NAME="$FRONTEND_BUCKET"
+        
+        echo "🔐 Configuring Block Public Access for static website hosting..."
+        echo "📋 Current settings:"
+        aws s3api get-public-access-block --bucket $BUCKET_NAME || echo "No current Block Public Access configuration"
+        
+        echo "🔧 Updating Block Public Access settings..."
+        # Configure for static website hosting:
+        # - Block public ACLs (security)
+        # - Ignore public ACLs (security)
+        # - Allow public policies (required for website)
+        # - Allow public bucket access (required for website)
+        aws s3api put-public-access-block \
+          --bucket $BUCKET_NAME \
+          --public-access-block-configuration \
+          BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false
+        
+        echo "✅ Updated settings:"
+        aws s3api get-public-access-block --bucket $BUCKET_NAME
+        
+        echo "⚠️  Security Note: Public policies are now allowed for static website hosting"
+        echo "🛡️  ACL-based public access is still blocked for security"
+    
+    - name: 🌐 Configure S3 Static Website Hosting
+      run: |
+        BUCKET_NAME="$FRONTEND_BUCKET"
+        
         # Configure bucket for static website hosting
         echo "🌐 Configuring static website hosting..."
         aws s3 website s3://$BUCKET_NAME \
@@ -73,6 +102,7 @@ jobs:
           --error-document index.html
         
         # Set bucket policy for public read access
+        echo "📜 Creating bucket policy for public read access..."
         cat > bucket-policy.json << EOF
         {
           "Version": "2012-10-17",
@@ -88,11 +118,37 @@ jobs:
         }
         EOF
         
+        echo "🔧 Applying bucket policy..."
         aws s3api put-bucket-policy \
           --bucket $BUCKET_NAME \
           --policy file://bucket-policy.json
         
-        echo "FRONTEND_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
+        echo "✅ Bucket policy applied successfully"
+        
+        # Get website endpoint
+        WEBSITE_ENDPOINT="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
+        echo "🌍 Website endpoint: $WEBSITE_ENDPOINT"
+        echo "WEBSITE_ENDPOINT=$WEBSITE_ENDPOINT" >> $GITHUB_ENV
+    
+    - name: 🧪 Test S3 Website Configuration
+      run: |
+        BUCKET_NAME="$FRONTEND_BUCKET"
+        
+        echo "🧪 Testing S3 website configuration..."
+        
+        # Verify bucket policy
+        echo "📋 Verifying bucket policy:"
+        aws s3api get-bucket-policy --bucket $BUCKET_NAME --query Policy --output text | jq .
+        
+        # Verify website configuration
+        echo "🌐 Verifying website configuration:"
+        aws s3api get-bucket-website --bucket $BUCKET_NAME
+        
+        # Test endpoint accessibility (will fail until content is uploaded, but checks DNS)
+        echo "🔍 Testing endpoint resolution:"
+        nslookup "${BUCKET_NAME}.s3-website-${{ env.AWS_REGION }}.amazonaws.com" || echo "⚠️  DNS resolution test (expected to work after deployment)"
+        
+        echo "✅ S3 website configuration validated"
     
     - name: ⚡ Setup Lambda execution role
       run: |
@@ -140,6 +196,7 @@ jobs:
         
         ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query 'Role.Arn' --output text)
         echo "LAMBDA_ROLE_ARN=$ROLE_ARN" >> $GITHUB_ENV
+        echo "✅ Lambda role ARN: $ROLE_ARN"
     
     - name: 🌐 Setup VPC and Security Groups
       run: |
@@ -192,6 +249,7 @@ jobs:
         fi
         
         echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
+        echo "✅ VPC configured: $VPC_ID"
     
     - name: 📋 Generate infrastructure summary
       run: |
@@ -203,10 +261,12 @@ jobs:
         **Environment**: $ENVIRONMENT
         **Region**: ${{ env.AWS_REGION }}
         **Timestamp**: $(date)
+        **Workflow Run**: ${{ github.run_id }}
         
         ## 📱 Frontend Infrastructure
         - **S3 Bucket**: ${FRONTEND_BUCKET}
-        - **Website URL**: http://${FRONTEND_BUCKET}.s3-website-${{ env.AWS_REGION }}.amazonaws.com
+        - **Website URL**: ${WEBSITE_ENDPOINT}
+        - **Block Public Access**: Configured for static website hosting
         - **Status**: ✅ Ready
         
         ## ⚡ Backend Infrastructure
@@ -214,27 +274,54 @@ jobs:
         - **VPC ID**: ${VPC_ID}
         - **Status**: ✅ Ready
         
+        ## 🔐 Security Configuration
+        - **S3 Block Public Access**:
+          - BlockPublicAcls: ✅ true (secure)
+          - IgnorePublicAcls: ✅ true (secure)
+          - BlockPublicPolicy: ❌ false (required for website)
+          - RestrictPublicBuckets: ❌ false (required for website)
+        - **Bucket Policy**: Public read access for website hosting
+        
         ## 🔄 Next Steps
         1. Run the database provisioning workflow
         2. Deploy your application using the main pipeline
         3. Configure monitoring and alerts
+        4. Review security settings and add CloudFront if needed
         
         ## 💡 Cost Optimization
         - S3 bucket configured for standard storage
         - Lambda cold starts minimized with provisioned concurrency (when needed)
         - VPC endpoints can be added to reduce NAT gateway costs
         
+        ## 🛠️ Troubleshooting
+        If you encounter S3 Block Public Access errors:
+        1. Check the S3 troubleshooting guide: docs/S3-TROUBLESHOOTING-GUIDE.md
+        2. Verify IAM permissions include s3:PutPublicAccessBlock
+        3. Review the bucket policy and Block Public Access settings
+        
         EOF
         
-        echo "✅ Infrastructure setup completed!"
+        echo "✅ Infrastructure setup completed successfully!"
+        echo "📄 Summary report generated: infrastructure-summary.md"
     
     - name: 💾 Upload infrastructure artifacts
-
       uses: actions/upload-artifact@v4
-
       with:
         name: infrastructure-${{ github.event.inputs.environment }}-${{ github.run_id }}
         path: |
           infrastructure-summary.md
           *.json
         retention-days: 90
+    
+    - name: 📊 Display Summary
+      run: |
+        echo "" 
+        echo "🎉 =================================="
+        echo "✅ INFRASTRUCTURE SETUP COMPLETE"
+        echo "=================================="
+        echo "📱 Website URL: $WEBSITE_ENDPOINT"
+        echo "🪣 S3 Bucket: $FRONTEND_BUCKET"
+        echo "🌐 VPC ID: $VPC_ID"
+        echo "⚡ Lambda Role: $LAMBDA_ROLE_ARN"
+        echo "📄 Full report available in artifacts"
+        echo "=================================="
