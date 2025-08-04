@@ -628,115 +628,115 @@ jobs:
           echo "✅ Database cluster exists: $DB_EXISTS"
         fi
     
-- name: 🚀 Deploy frontend to S3
-      run: |
-        echo "📱 Deploying frontend to S3..."
-        
-        # Use a simpler bucket name to avoid conflicts
-        BUCKET_NAME="webapp-demo-staging-${GITHUB_RUN_ID}"
-        
-        echo "🪣 Attempting to create bucket: $BUCKET_NAME"
-        
-        # Try to create bucket with error handling
-        if aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }}; then
-          echo "✅ S3 bucket created successfully: $BUCKET_NAME"
-          
-          # Configure bucket for static website hosting
-          echo "🌐 Configuring static website hosting..."
-          aws s3 website s3://$BUCKET_NAME \
-            --index-document index.html \
-            --error-document index.html
-          
-          # Set bucket policy for public read access
-          echo "🔓 Setting bucket policy for public access..."
-          
-          # Create policy JSON with proper formatting using printf
-          printf '{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "PublicReadGetObject",
-      "Effect": "Allow",
-      "Principal": "*",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::%s/*"
-    }
-  ]
-}' "$BUCKET_NAME" > bucket-policy.json
-          
-          # Verify the JSON is valid
-          echo "🔍 Validating JSON policy..."
-          if command -v jq >/dev/null 2>&1; then
-            cat bucket-policy.json | jq . >/dev/null && echo "✅ JSON is valid (verified with jq)"
-          elif python3 -c "import json; json.load(open('bucket-policy.json'))" 2>/dev/null; then
-            echo "✅ JSON is valid (verified with Python)"
-          else
-            echo "⚠️ Could not verify JSON validity, but proceeding..."
-          fi
-          
-          # Show the policy for debugging
-          echo "📋 Policy content:"
-          cat bucket-policy.json
-          
-          # Apply the policy
-          aws s3api put-bucket-policy \
-            --bucket $BUCKET_NAME \
-            --policy file://bucket-policy.json
-          
-          echo "✅ Bucket policy applied successfully"
-          
-          # Continue with the rest of the deployment...
-          # Upload frontend files if they exist
-          if [ -d "dist/apps/app" ]; then
-            echo "📤 Uploading frontend files..."
-            aws s3 sync dist/apps/app/ s3://$BUCKET_NAME/ \
-              --delete \
-              --cache-control "public, max-age=31536000" \
-              --metadata-directive REPLACE
+    - name: 🚀 Deploy frontend to S3
+          run: |
+            echo "📱 Deploying frontend to S3..."
             
-            WEBSITE_URL="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
-            echo "🌐 Website URL: $WEBSITE_URL"
-            echo "WEBSITE_URL=$WEBSITE_URL" >> $GITHUB_ENV
-          else
-            echo "⚠️ No frontend build found in dist/apps/app"
-            # Create a placeholder index.html
-            mkdir -p placeholder
-            printf '<!DOCTYPE html>
-<html>
-<head>
-    <title>WebApp Demo - Staging</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .success { color: #28a745; }
-        .info { color: #17a2b8; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1 class="success">🎉 Deployment Successful!</h1>
-        <h2>WebApp Demo - Staging Environment</h2>
-        <p class="info">Pipeline ID: %s</p>
-        <p class="info">Deployed: %s</p>
-        <p class="info">Branch: %s</p>
-        <p>Your CI/CD pipeline is working correctly!</p>
-        <p>Next step: Build your React application to replace this placeholder.</p>
-    </div>
-</body>
-</html>' "${{ github.run_id }}" "$(date)" "${{ github.ref_name }}" > placeholder/index.html
+            # Use a simpler bucket name to avoid conflicts
+            BUCKET_NAME="webapp-demo-staging-${GITHUB_RUN_ID}"
             
-            aws s3 sync placeholder/ s3://$BUCKET_NAME/
-            WEBSITE_URL="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
-            echo "🌐 Placeholder website URL: $WEBSITE_URL"
-            echo "WEBSITE_URL=$WEBSITE_URL" >> $GITHUB_ENV
-          fi
-          
-          echo "FRONTEND_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
-          
-        else
-          echo "❌ Failed to create S3 bucket: $BUCKET_NAME"
-          # ... rest of error handling remains the same
-        fi
+            echo "🪣 Attempting to create bucket: $BUCKET_NAME"
+            
+            # Try to create bucket with error handling
+            if aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }}; then
+              echo "✅ S3 bucket created successfully: $BUCKET_NAME"
+              
+              # Configure bucket for static website hosting
+              echo "🌐 Configuring static website hosting..."
+              aws s3 website s3://$BUCKET_NAME \
+                --index-document index.html \
+                --error-document index.html
+              
+              # Set bucket policy for public read access
+              echo "🔓 Setting bucket policy for public access..."
+              
+              # Create policy JSON with proper formatting using printf
+              printf '{
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "PublicReadGetObject",
+          "Effect": "Allow",
+          "Principal": "*",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::%s/*"
+        }
+      ]
+    }' "$BUCKET_NAME" > bucket-policy.json
+              
+              # Verify the JSON is valid
+              echo "🔍 Validating JSON policy..."
+              if command -v jq >/dev/null 2>&1; then
+                cat bucket-policy.json | jq . >/dev/null && echo "✅ JSON is valid (verified with jq)"
+              elif python3 -c "import json; json.load(open('bucket-policy.json'))" 2>/dev/null; then
+                echo "✅ JSON is valid (verified with Python)"
+              else
+                echo "⚠️ Could not verify JSON validity, but proceeding..."
+              fi
+              
+              # Show the policy for debugging
+              echo "📋 Policy content:"
+              cat bucket-policy.json
+              
+              # Apply the policy
+              aws s3api put-bucket-policy \
+                --bucket $BUCKET_NAME \
+                --policy file://bucket-policy.json
+              
+              echo "✅ Bucket policy applied successfully"
+              
+              # Continue with the rest of the deployment...
+              # Upload frontend files if they exist
+              if [ -d "dist/apps/app" ]; then
+                echo "📤 Uploading frontend files..."
+                aws s3 sync dist/apps/app/ s3://$BUCKET_NAME/ \
+                  --delete \
+                  --cache-control "public, max-age=31536000" \
+                  --metadata-directive REPLACE
+                
+                WEBSITE_URL="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
+                echo "🌐 Website URL: $WEBSITE_URL"
+                echo "WEBSITE_URL=$WEBSITE_URL" >> $GITHUB_ENV
+              else
+                echo "⚠️ No frontend build found in dist/apps/app"
+                # Create a placeholder index.html
+                mkdir -p placeholder
+                printf '<!DOCTYPE html>
+    <html>
+    <head>
+        <title>WebApp Demo - Staging</title>
+        <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+            .container { max-width: 600px; margin: 0 auto; }
+            .success { color: #28a745; }
+            .info { color: #17a2b8; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1 class="success">🎉 Deployment Successful!</h1>
+            <h2>WebApp Demo - Staging Environment</h2>
+            <p class="info">Pipeline ID: %s</p>
+            <p class="info">Deployed: %s</p>
+            <p class="info">Branch: %s</p>
+            <p>Your CI/CD pipeline is working correctly!</p>
+            <p>Next step: Build your React application to replace this placeholder.</p>
+        </div>
+    </body>
+    </html>' "${{ github.run_id }}" "$(date)" "${{ github.ref_name }}" > placeholder/index.html
+                
+                aws s3 sync placeholder/ s3://$BUCKET_NAME/
+                WEBSITE_URL="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
+                echo "🌐 Placeholder website URL: $WEBSITE_URL"
+                echo "WEBSITE_URL=$WEBSITE_URL" >> $GITHUB_ENV
+              fi
+              
+              echo "FRONTEND_BUCKET=$BUCKET_NAME" >> $GITHUB_ENV
+              
+            else
+              echo "❌ Failed to create S3 bucket: $BUCKET_NAME"
+              # ... rest of error handling remains the same
+            fi
     
     - name: ⚡ Deploy backend to Lambda
       run: |
