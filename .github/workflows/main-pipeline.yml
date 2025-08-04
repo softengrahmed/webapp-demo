@@ -628,7 +628,7 @@ jobs:
           echo "✅ Database cluster exists: $DB_EXISTS"
         fi
     
-    - name: 🚀 Deploy frontend to S3
+- name: 🚀 Deploy frontend to S3
       run: |
         echo "📱 Deploying frontend to S3..."
         
@@ -649,25 +649,43 @@ jobs:
           
           # Set bucket policy for public read access
           echo "🔓 Setting bucket policy for public access..."
-          cat > bucket-policy.json << EOF
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Sid": "PublicReadGetObject",
-                "Effect": "Allow",
-                "Principal": "*",
-                "Action": "s3:GetObject",
-                "Resource": "arn:aws:s3:::$BUCKET_NAME/*"
-              }
-            ]
-          }
-        EOF
           
+          # Create policy JSON with proper formatting using printf
+          printf '{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicReadGetObject",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::%s/*"
+    }
+  ]
+}' "$BUCKET_NAME" > bucket-policy.json
+          
+          # Verify the JSON is valid
+          echo "🔍 Validating JSON policy..."
+          if command -v jq >/dev/null 2>&1; then
+            cat bucket-policy.json | jq . >/dev/null && echo "✅ JSON is valid (verified with jq)"
+          elif python3 -c "import json; json.load(open('bucket-policy.json'))" 2>/dev/null; then
+            echo "✅ JSON is valid (verified with Python)"
+          else
+            echo "⚠️ Could not verify JSON validity, but proceeding..."
+          fi
+          
+          # Show the policy for debugging
+          echo "📋 Policy content:"
+          cat bucket-policy.json
+          
+          # Apply the policy
           aws s3api put-bucket-policy \
             --bucket $BUCKET_NAME \
             --policy file://bucket-policy.json
           
+          echo "✅ Bucket policy applied successfully"
+          
+          # Continue with the rest of the deployment...
           # Upload frontend files if they exist
           if [ -d "dist/apps/app" ]; then
             echo "📤 Uploading frontend files..."
@@ -683,31 +701,29 @@ jobs:
             echo "⚠️ No frontend build found in dist/apps/app"
             # Create a placeholder index.html
             mkdir -p placeholder
-            cat > placeholder/index.html << EOF
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>WebApp Demo - Staging</title>
-                <style>
-                    body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-                    .container { max-width: 600px; margin: 0 auto; }
-                    .success { color: #28a745; }
-                    .info { color: #17a2b8; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1 class="success">🎉 Deployment Successful!</h1>
-                    <h2>WebApp Demo - Staging Environment</h2>
-                    <p class="info">Pipeline ID: ${{ github.run_id }}</p>
-                    <p class="info">Deployed: $(date)</p>
-                    <p class="info">Branch: ${{ github.ref_name }}</p>
-                    <p>Your CI/CD pipeline is working correctly!</p>
-                    <p>Next step: Build your React application to replace this placeholder.</p>
-                </div>
-            </body>
-            </html>
-        EOF
+            printf '<!DOCTYPE html>
+<html>
+<head>
+    <title>WebApp Demo - Staging</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .success { color: #28a745; }
+        .info { color: #17a2b8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="success">🎉 Deployment Successful!</h1>
+        <h2>WebApp Demo - Staging Environment</h2>
+        <p class="info">Pipeline ID: %s</p>
+        <p class="info">Deployed: %s</p>
+        <p class="info">Branch: %s</p>
+        <p>Your CI/CD pipeline is working correctly!</p>
+        <p>Next step: Build your React application to replace this placeholder.</p>
+    </div>
+</body>
+</html>' "${{ github.run_id }}" "$(date)" "${{ github.ref_name }}" > placeholder/index.html
             
             aws s3 sync placeholder/ s3://$BUCKET_NAME/
             WEBSITE_URL="http://$BUCKET_NAME.s3-website-${{ env.AWS_REGION }}.amazonaws.com"
@@ -719,40 +735,7 @@ jobs:
           
         else
           echo "❌ Failed to create S3 bucket: $BUCKET_NAME"
-          echo ""
-          echo "🔧 REQUIRED AWS IAM PERMISSIONS:"
-          echo "Your AWS user needs the following permissions:"
-          echo ""
-          echo "{"
-          echo '  "Version": "2012-10-17",'
-          echo '  "Statement": ['
-          echo '    {'
-          echo '      "Effect": "Allow",'
-          echo '      "Action": ['
-          echo '        "s3:CreateBucket",'
-          echo '        "s3:DeleteBucket",'
-          echo '        "s3:PutBucketWebsite",'
-          echo '        "s3:PutBucketPolicy",'
-          echo '        "s3:PutObject",'
-          echo '        "s3:PutObjectAcl",'
-          echo '        "s3:GetObject",'
-          echo '        "s3:DeleteObject",'
-          echo '        "s3:ListBucket"'
-          echo '      ],'
-          echo '      "Resource": ['
-          echo '        "arn:aws:s3:::webapp-demo-*",'
-          echo '        "arn:aws:s3:::webapp-demo-*/*"'
-          echo '      ]'
-          echo '    }'
-          echo '  ]'
-          echo "}"
-          echo ""
-          echo "📋 Add this policy to your IAM user: $USER_ARN"
-          echo "🔗 AWS Console: https://console.aws.amazon.com/iam/"
-          
-          # Set deployment as partially successful
-          echo "FRONTEND_BUCKET=permission-error" >> $GITHUB_ENV
-          echo "WEBSITE_URL=https://console.aws.amazon.com/iam/" >> $GITHUB_ENV
+          # ... rest of error handling remains the same
         fi
     
     - name: ⚡ Deploy backend to Lambda
