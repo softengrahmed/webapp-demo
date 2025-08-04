@@ -48,6 +48,26 @@ The architecture and tech stack of the deployed application consist of:
 
   This will run all the containers configured in `docker-compose.prod.yml`.
 
+## 🚀 AWS Cloud Deployment
+
+This project includes GitHub Actions workflows for automated AWS deployment:
+
+### Prerequisites
+- AWS account with appropriate permissions
+- GitHub repository secrets configured:
+  - `AWS_ACCESS_KEY_ID`
+  - `AWS_SECRET_ACCESS_KEY`
+
+### Deployment Steps
+1. Run the **🏗️ Setup Infrastructure** workflow to create AWS resources
+2. Run your main deployment pipeline to deploy the application
+
+### Infrastructure Components
+- **S3 Bucket**: Static website hosting for React frontend
+- **Lambda Functions**: Serverless backend API
+- **VPC**: Network isolation and security
+- **IAM Roles**: Proper permission management
+
 ## Endpoints
 
 Once the stack is running, you can access the different parts using:
@@ -56,6 +76,114 @@ Once the stack is running, you can access the different parts using:
 - API Server: `https://api.yourdomain.com`, you can change the subdomain in your `.env` file.
 - Traefik Dashboard: `https://traefik.yourdomain.com`, where you can see the different services configured in your Docker stack and that Traefik is serving.
 - DB Admin / Adminer: `https://adminer.yourdomain.com/`, a simple database management tool, you can use the DB credentials configured in the `.env` file to log in.
+
+## 🛠️ Troubleshooting
+
+### Common Deployment Issues
+
+#### 1. 🪣 S3 Block Public Access Error
+**Error**: `AccessDenied when calling the PutBucketPolicy operation... public policies are blocked`
+
+**Quick Fix**:
+```bash
+# Allow public policies for static website hosting
+aws s3api put-public-access-block --bucket YOUR-BUCKET-NAME \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false
+```
+
+**Detailed Solution**: See [S3 Troubleshooting Guide](docs/S3-TROUBLESHOOTING-GUIDE.md)
+
+#### 2. 🔐 IAM Permission Issues
+**Error**: `User is not authorized to perform: s3:CreateBucket`
+
+**Solution**: Ensure your IAM user has the following permissions:
+- `s3:CreateBucket`
+- `s3:PutBucketPolicy`
+- `s3:PutPublicAccessBlock`
+- `s3:PutBucketWebsite`
+
+#### 3. 🌐 Website Not Accessible
+**Issue**: S3 website endpoint returns 403 Forbidden
+
+**Checklist**:
+- [ ] Block Public Access settings allow public policies
+- [ ] Bucket policy grants public read access
+- [ ] Static website hosting is enabled
+- [ ] Index document is set to `index.html`
+
+#### 4. 🐳 Docker Build Failures
+**Issue**: Docker build fails during dependency installation
+
+**Solutions**:
+```bash
+# Clear Docker cache
+docker system prune -f
+
+# Rebuild with no cache
+docker-compose -f docker-compose.prod.yml build --no-cache
+
+# Check disk space
+df -h
+```
+
+#### 5. 📊 Database Connection Issues
+**Issue**: API server cannot connect to PostgreSQL
+
+**Debug Steps**:
+```bash
+# Check container logs
+docker-compose -f docker-compose.prod.yml logs db
+docker-compose -f docker-compose.prod.yml logs api
+
+# Test database connectivity
+docker exec -it $(docker ps -q -f name=db) psql -U postgres -d webapp
+```
+
+### 🆘 Emergency Recovery
+
+If your deployment is completely broken:
+
+1. **Stop all services**:
+   ```bash
+   docker-compose -f docker-compose.prod.yml down
+   ```
+
+2. **Reset AWS resources** (if needed):
+   ```bash
+   # Re-run infrastructure setup with force recreate
+   # Via GitHub Actions: enable "Force recreate existing resources"
+   ```
+
+3. **Clean local environment**:
+   ```bash
+   docker system prune -af
+   docker volume prune -f
+   ```
+
+4. **Redeploy from scratch**:
+   ```bash
+   ./build-with-docker.sh
+   ./run-prod.sh
+   ```
+
+### 📞 Getting Help
+
+If you're still experiencing issues:
+
+1. **Check the logs**:
+   - GitHub Actions workflow logs
+   - Docker container logs
+   - AWS CloudTrail (for AWS-related issues)
+
+2. **Review documentation**:
+   - [S3 Troubleshooting Guide](docs/S3-TROUBLESHOOTING-GUIDE.md)
+   - [AWS Service Health Dashboard](https://status.aws.amazon.com/)
+
+3. **Common solutions**:
+   - Verify all environment variables are set
+   - Check AWS service quotas and limits
+   - Ensure your AWS credentials have sufficient permissions
 
 ## Some Docker commands
 
@@ -177,6 +305,6 @@ Visit the [Nx Documentation](https://nx.dev) to learn more.
 
 Nx Cloud pairs with Nx in order to enable you to build and test code more rapidly, by up to 10 times. Even teams that are new to Nx can connect to Nx Cloud and start saving time instantly.
 
-Teams using Nx gain the advantage of building full-stack applications with their preferred framework alongside Nx’s advanced code generation and project dependency graph, plus a unified experience for both frontend and backend developers.
+Teams using Nx gain the advantage of building full-stack applications with their preferred framework alongside Nx's advanced code generation and project dependency graph, plus a unified experience for both frontend and backend developers.
 
 Visit [Nx Cloud](https://nx.app/) to learn more.
