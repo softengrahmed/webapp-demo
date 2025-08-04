@@ -29,9 +29,9 @@ env:
   DEPLOYMENT_ENV: ${{ github.event.inputs.environment || 'staging' }}
 
 jobs:
-  # =====================================
-  # STAGE 1: BUILD & VALIDATE
-  # =====================================
+# =====================================
+# STAGE 1: BUILD & VALIDATE
+# =====================================
   build-and-validate:
     name: 🔧 Build & Validate
     runs-on: ubuntu-latest
@@ -171,9 +171,9 @@ jobs:
           .yarnrc.yml
         retention-days: 7
 
-  # =====================================
-  # STAGE 2: SECURITY & QUALITY
-  # =====================================
+# =====================================
+# STAGE 2: SECURITY & QUALITY
+# =====================================
   security-and-quality:
     name: 🔒 Security & Quality Analysis
     runs-on: ubuntu-latest
@@ -427,9 +427,9 @@ jobs:
           test-report-*.txt
         retention-days: 14
 
-  # =====================================
-  # STAGE 4: PERFORMANCE TESTING
-  # =====================================
+# =====================================
+# STAGE 4: PERFORMANCE TESTING
+# =====================================
   performance-testing:
     name: ⚡ Performance Testing
     runs-on: ubuntu-latest
@@ -504,9 +504,9 @@ jobs:
           lighthouse-report.json
         retention-days: 30
 
-  # =====================================
-  # STAGE 5: QUALITY GATES
-  # =====================================
+# =====================================
+# STAGE 5: QUALITY GATES
+# =====================================
   quality-gates:
     name: 🎯 Quality Gates
     runs-on: ubuntu-latest
@@ -565,9 +565,9 @@ jobs:
     outputs:
       gates-passed: ${{ env.GATES_PASSED }}
 
-  # =====================================
-  # STAGE 6: DEPLOY TO STAGING
-  # =====================================
+# =====================================
+# STAGE 6: DEPLOY TO STAGING
+# =====================================
   deploy-staging:
     name: 🚀 Deploy to Staging
     runs-on: ubuntu-latest
@@ -833,9 +833,9 @@ jobs:
           bucket-policy.json
         retention-days: 30
 
-  # =====================================
-  # STAGE 7: NOTIFICATIONS
-  # =====================================
+# =====================================
+# STAGE 7: NOTIFICATIONS
+# =====================================
   notifications:
     name: 📢 Notifications
     runs-on: ubuntu-latest
@@ -872,9 +872,9 @@ jobs:
         #   -H 'Content-type: application/json' \
         #   --data '{"text":"'$EMOJI' Deployment '$STATUS' - Pipeline '${{ github.run_id }}'"}'
 
-  # =====================================
-  # STAGE 8: CLEANUP
-  # =====================================
+# =====================================
+# STAGE 8: CLEANUP
+# =====================================
   cleanup:
     name: 🧹 Cleanup
     runs-on: ubuntu-latest
