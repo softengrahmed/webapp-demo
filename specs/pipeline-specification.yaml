@@ -1,0 +1,146 @@
+# Pipeline Specification v1-2025-08-10-14-30-45
+# Generated for: https://github.com/softengrahmed/webapp-demo
+
+metadata:
+  version: v1-2025-08-10-14-30-45
+  created: 2025-08-10T14:30:45Z
+  repository: https://github.com/softengrahmed/webapp-demo
+  tier: minimal
+  estimated_cost: $10-12/month
+
+project:
+  language: nodejs
+  framework: nx-monorepo
+  package_manager: yarn
+  runtime: nodejs18.x
+  
+deployment:
+  platform: aws-serverless
+  architecture:
+    compute: lambda
+    api: api-gateway
+    database: aurora-serverless-v2
+  
+environments:
+  - name: dev
+    branch: dev
+    auto_deploy: true
+    approval_required: false
+    retention_days:
+      logs: 7
+      artifacts: 7
+  - name: prod
+    branch: main
+    auto_deploy: false
+    approval_required: true
+    retention_days:
+      logs: 30
+      artifacts: 90
+
+resources:
+  lambda:
+    memory_mb: 256
+    timeout_seconds: 30
+    architecture: x86_64
+    reserved_concurrent_executions: 5
+  aurora:
+    min_acu: 0.5
+    max_acu: 1
+    auto_pause_minutes: 5
+    backup_retention_days: 7
+  api_gateway:
+    throttle_burst_limit: 100
+    throttle_rate_limit: 50
+    
+features:
+  security_scanning:
+    enabled: true
+    tools:
+      - name: sonarcloud
+        type: sast
+      - name: npm-audit
+        type: dependency
+      - name: snyk
+        type: vulnerability
+  quality_gates:
+    enabled: true
+    requirements:
+      code_coverage: 80
+      max_critical_issues: 0
+      max_high_issues: 5
+  blue_green_deployment:
+    enabled: true
+    validation_period_minutes: 5
+    traffic_shift_percentage: 10
+    auto_rollback: true
+    
+pipeline:
+  stages:
+    - name: build
+      retries: 3
+      timeout_minutes: 10
+      steps:
+        - checkout
+        - setup_node
+        - install_dependencies
+        - run_tests
+        - compile_typescript
+        - build_artifacts
+    - name: security
+      retries: 2
+      timeout_minutes: 5
+      steps:
+        - dependency_scan
+        - sast_analysis
+        - container_scan
+    - name: deploy
+      retries: 3
+      timeout_minutes: 15
+      steps:
+        - package_lambda
+        - deploy_infrastructure
+        - update_lambda_code
+        - configure_api_gateway
+    - name: verify
+      retries: 2
+      timeout_minutes: 5
+      steps:
+        - health_checks
+        - smoke_tests
+        - performance_tests
+    - name: report
+      retries: 1
+      timeout_minutes: 3
+      steps:
+        - generate_reports
+        - send_notifications
+        - update_metrics
+    - name: cleanup
+      retries: 1
+      timeout_minutes: 2
+      steps:
+        - clean_temp_resources
+        - archive_artifacts
+        
+cost_controls:
+  budget_alert_threshold: 10
+  auto_shutdown_idle_minutes: 5
+  cleanup_old_artifacts_days: 30
+  
+notifications:
+  channels:
+    - type: email
+      events:
+        - deployment_success
+        - deployment_failure
+        - budget_alert
+    - type: github
+      events:
+        - all
+        
+compliance:
+  level: basic
+  audit_logging: true
+  encryption_at_rest: true
+  encryption_in_transit: true
+  retention_policy: standard
