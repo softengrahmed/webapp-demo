@@ -1,0 +1,181 @@
+# ============================================================================
+# Monitoring and Alerting Configuration
+# ============================================================================
+# Description: CloudWatch dashboards and alarms configuration
+# Version: 1.0.0
+# ============================================================================
+
+monitoring:
+  dashboards:
+    pipeline:
+      name: CICD-Pipeline-Dashboard
+      widgets:
+        - type: metric
+          title: Pipeline Success Rate
+          metrics:
+            - id: m1
+              stat: Average
+              period: 300
+              metric:
+                namespace: GitHub/Actions
+                name: PipelineSuccess
+                dimensions:
+                  Repository: webapp-demo
+        
+        - type: metric
+          title: Build Duration
+          metrics:
+            - id: m2
+              stat: Average
+              period: 300
+              metric:
+                namespace: GitHub/Actions
+                name: BuildDuration
+                dimensions:
+                  Repository: webapp-demo
+        
+        - type: metric
+          title: Test Coverage
+          metrics:
+            - id: m3
+              stat: Average
+              period: 86400
+              metric:
+                namespace: GitHub/Actions
+                name: TestCoverage
+                dimensions:
+                  Repository: webapp-demo
+        
+        - type: log
+          title: Recent Deployments
+          query: |
+            fields @timestamp, environment, version, status
+            | filter @message like /Deployment/
+            | sort @timestamp desc
+            | limit 20
+
+    application:
+      name: Application-Performance-Dashboard
+      widgets:
+        - type: metric
+          title: API Latency
+          metrics:
+            - id: m1
+              stat: Average
+              period: 60
+              metric:
+                namespace: AWS/Lambda
+                name: Duration
+                dimensions:
+                  FunctionName: webapp-demo-api
+        
+        - type: metric
+          title: API Errors
+          metrics:
+            - id: m2
+              stat: Sum
+              period: 60
+              metric:
+                namespace: AWS/Lambda
+                name: Errors
+                dimensions:
+                  FunctionName: webapp-demo-api
+        
+        - type: metric
+          title: Database Connections
+          metrics:
+            - id: m3
+              stat: Average
+              period: 300
+              metric:
+                namespace: AWS/RDS
+                name: DatabaseConnections
+                dimensions:
+                  DBClusterIdentifier: webapp-demo-cluster
+
+  alarms:
+    high_error_rate:
+      metric: AWS/Lambda/Errors
+      statistic: Sum
+      period: 300
+      evaluation_periods: 2
+      threshold: 10
+      comparison: GreaterThanThreshold
+      treat_missing_data: notBreaching
+      alarm_actions:
+        - sns_topic: webapp-demo-alerts
+    
+    high_latency:
+      metric: AWS/Lambda/Duration
+      statistic: Average
+      period: 300
+      evaluation_periods: 2
+      threshold: 3000
+      comparison: GreaterThanThreshold
+      treat_missing_data: notBreaching
+      alarm_actions:
+        - sns_topic: webapp-demo-alerts
+    
+    pipeline_failure:
+      metric: GitHub/Actions/PipelineSuccess
+      statistic: Average
+      period: 300
+      evaluation_periods: 1
+      threshold: 0.8
+      comparison: LessThanThreshold
+      treat_missing_data: breaching
+      alarm_actions:
+        - sns_topic: webapp-demo-critical-alerts
+    
+    low_test_coverage:
+      metric: GitHub/Actions/TestCoverage
+      statistic: Average
+      period: 86400
+      evaluation_periods: 1
+      threshold: 80
+      comparison: LessThanThreshold
+      treat_missing_data: notBreaching
+      alarm_actions:
+        - sns_topic: webapp-demo-alerts
+
+  notifications:
+    sns_topics:
+      webapp-demo-alerts:
+        display_name: WebApp Demo Alerts
+        subscriptions:
+          - protocol: email
+            endpoint: devops@example.com
+      
+      webapp-demo-critical-alerts:
+        display_name: WebApp Demo Critical Alerts
+        subscriptions:
+          - protocol: email
+            endpoint: oncall@example.com
+          - protocol: sms
+            endpoint: "+1234567890"
+
+  log_insights:
+    queries:
+      deployment_summary:
+        name: Daily Deployment Summary
+        query: |
+          fields @timestamp, environment, version, status, duration
+          | filter @message like /Deployment/
+          | stats count() by status, environment
+          | sort count desc
+      
+      error_analysis:
+        name: Error Analysis
+        query: |
+          fields @timestamp, @message, error.type, error.message
+          | filter level = "ERROR"
+          | stats count() by error.type
+          | sort count desc
+          | limit 10
+      
+      performance_analysis:
+        name: Performance Analysis
+        query: |
+          fields @timestamp, duration, memory_used, cold_start
+          | filter @type = "REPORT"
+          | stats avg(duration), max(duration), min(duration) by bin(5m)
