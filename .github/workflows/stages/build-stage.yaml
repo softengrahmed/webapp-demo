@@ -1,8 +1,8 @@
 # ============================================================================
-# Build Stage Module - v1.0.1
+# Build Stage Module - v1.0.2
 # ============================================================================
 # Description: Reusable build stage with retry logic and artifact management
-# Version: 1.0.1 - Fixed Yarn 3 support
+# Version: 1.0.2 - Fixed Yarn 3 cache issue
 # ============================================================================
 
 name: Build Stage
@@ -50,7 +50,7 @@ jobs:
       - name: Generate Build Metadata
         id: metadata
         run: |
-          BUILD_ID="build-${{ github.run_number }}-${{ github.run_attempt }}"
+          BUILD_ID="$(date +%Y%m%d-%H%M%S)-${{ github.run_number }}"
           VERSION="$(cat package.json | jq -r .version || echo '0.0.0')"
           echo "build-id=${BUILD_ID}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -61,6 +61,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
+          # DO NOT add cache: 'yarn' here - it breaks with Yarn 3
 
       - name: Enable Corepack for Yarn 3
         run: |
@@ -133,7 +134,7 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ steps.metadata.outputs.build-id }}
+          name: build-artifacts-${{ steps.metadata.outputs.build-id }}
           path: |
             dist/
             package.json
