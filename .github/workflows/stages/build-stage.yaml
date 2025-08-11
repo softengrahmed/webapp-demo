@@ -1,0 +1,144 @@
+# ============================================================================
+# Build Stage Module
+# ============================================================================
+# Description: Reusable build stage with retry logic and artifact management
+# Version: 1.0.0
+# ============================================================================
+
+name: Build Stage
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version to use'
+        required: false
+        default: '16.x'
+        type: string
+      retry-attempts:
+        description: 'Number of retry attempts'
+        required: false
+        default: 3
+        type: number
+      artifact-retention:
+        description: 'Artifact retention in days'
+        required: false
+        default: 7
+        type: number
+    outputs:
+      build-id:
+        description: 'Generated build ID'
+        value: ${{ jobs.build.outputs.build-id }}
+      version:
+        description: 'Application version'
+        value: ${{ jobs.build.outputs.version }}
+
+jobs:
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    outputs:
+      build-id: ${{ steps.metadata.outputs.build-id }}
+      version: ${{ steps.metadata.outputs.version }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Build Metadata
+        id: metadata
+        run: |
+          BUILD_ID="$(date +%Y%m%d-%H%M%S)-${{ github.run_number }}"
+          VERSION="$(cat package.json | jq -r .version)"
+          echo "build-id=${BUILD_ID}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "📦 Build ID: ${BUILD_ID}"
+          echo "📦 Version: ${VERSION}"
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'yarn'
+
+      - name: Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.yarn/cache
+            .yarn/cache
+            node_modules
+          key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install Dependencies with Retry
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: ${{ inputs.retry-attempts }}
+          retry_wait_seconds: 5
+          command: |
+            echo "📦 Installing dependencies..."
+            yarn install --frozen-lockfile
+            echo "✅ Dependencies installed successfully"
+
+      - name: Build Application with Retry
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: ${{ inputs.retry-attempts }}
+          retry_wait_seconds: 10
+          command: |
+            echo "🔨 Building application..."
+            yarn nx run-many --target=build --all --parallel=3
+            echo "✅ Build completed successfully"
+
+      - name: Validate Build Output
+        run: |
+          echo "🔍 Validating build output..."
+          if [ ! -d "dist" ]; then
+            echo "❌ Build output directory not found"
+            exit 1
+          fi
+          echo "✅ Build validation passed"
+          ls -la dist/
+
+      - name: Create Build Manifest
+        run: |
+          cat > dist/build-manifest.json <<EOF
+          {
+            "buildId": "${{ steps.metadata.outputs.build-id }}",
+            "version": "${{ steps.metadata.outputs.version }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "runner": "${{ runner.os }}-${{ runner.arch }}"
+          }
+          EOF
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ steps.metadata.outputs.build-id }}
+          path: |
+            dist/
+            build-manifest.json
+            !**/node_modules
+            !**/.cache
+          retention-days: ${{ inputs.artifact-retention }}
+          compression-level: 9
+          overwrite: true
+
+      - name: Generate Build Report
+        run: |
+          echo "# Build Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build ID | ${{ steps.metadata.outputs.build-id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ steps.metadata.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duration | ${{ job.duration }} |" >> $GITHUB_STEP_SUMMARY
