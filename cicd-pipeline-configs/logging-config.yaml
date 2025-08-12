@@ -1,0 +1,119 @@
+# Logging Configuration for CI/CD Pipeline
+# Generated: 2025-08-10 14:30:45
+# Purpose: Define logging standards and formats for pipeline execution
+
+logging:
+  enabled: true
+  branch: deployment-reports
+  retention:
+    dev: 7  # days
+    staging: 14  # days
+    prod: 30  # days
+  
+  format:
+    type: markdown
+    structure:
+      - header: pipeline-information
+      - section: execution-timeline
+      - section: stage-logs
+      - section: summary
+      - footer: metadata
+  
+  levels:
+    - INFO
+    - WARNING
+    - ERROR
+    - DEBUG
+    - CRITICAL
+  
+  destinations:
+    - type: github-branch
+      branch: deployment-reports
+      path: "deployment-reports/{date}/run-{run_id}/"
+    - type: artifact
+      name: pipeline-logs
+      retention: 30
+    - type: cloudwatch
+      enabled: false  # Enable when AWS is configured
+      log_group: "/aws/cicd/webapp-demo"
+  
+  capture:
+    stdout: true
+    stderr: true
+    exit_codes: true
+    duration: true
+    timestamps: true
+    environment_variables: false  # Don't log secrets
+  
+  stages:
+    build:
+      enabled: true
+      verbose: true
+      capture_tests: true
+      capture_artifacts: true
+    
+    security:
+      enabled: true
+      verbose: true
+      capture_vulnerabilities: true
+      capture_recommendations: true
+    
+    quality:
+      enabled: true
+      verbose: true
+      capture_coverage: true
+      capture_metrics: true
+    
+    deploy:
+      enabled: true
+      verbose: true
+      capture_resources: true
+      capture_endpoints: true
+      capture_retry_attempts: true
+    
+    verify:
+      enabled: true
+      verbose: true
+      capture_health_checks: true
+      capture_performance: true
+    
+    cleanup:
+      enabled: true
+      verbose: true
+      capture_resources_cleaned: true
+      capture_space_freed: true
+  
+  notifications:
+    enabled: false  # Enable when Slack/Email is configured
+    channels:
+      - type: slack
+        webhook: "${SLACK_WEBHOOK_URL}"
+        events:
+          - pipeline_failed
+          - deployment_success
+      - type: email
+        recipients:
+          - "devops@webapp-demo.com"
+        events:
+          - pipeline_failed
+  
+  archival:
+    enabled: true
+    after_days: 30
+    compress: true
+    format: tar.gz
+    destination: s3://webapp-demo-archives/pipeline-logs/
+  
+  metrics:
+    track:
+      - pipeline_duration
+      - stage_durations
+      - success_rate
+      - failure_reasons
+      - resource_usage
+      - cost_per_run
+    
+    export_to:
+      - cloudwatch
+      - datadog  # If configured
+      - prometheus  # If configured
