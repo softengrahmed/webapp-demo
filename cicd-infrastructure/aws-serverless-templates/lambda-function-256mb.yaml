@@ -1,0 +1,47 @@
+# AWS Lambda Function Template
+# Memory: 256MB (Minimal Tier)
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+  WebAppFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'webapp-demo-${Environment}'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      MemorySize: 256
+      Timeout: 30
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          NODE_ENV: !Ref Environment
+      Tags:
+        Project: webapp-demo
+        Environment: !Ref Environment
+        Tier: minimal
+        ManagedBy: cicd-pipeline
+
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/webapp-demo-${Environment}'
+      RetentionInDays: 7
+
+Outputs:
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt WebAppFunction.Arn
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref WebAppFunction

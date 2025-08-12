@@ -1,0 +1,49 @@
+# Aurora Serverless v2 Configuration
+# Capacity: 0.5-1 ACU (Minimal Tier)
+
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  DatabaseCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      EngineMode: provisioned
+      EngineVersion: 8.0.mysql_aurora.3.02.0
+      DatabaseName: webappdb
+      MasterUsername: admin
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:webapp-demo-${Environment}-db-password}}'
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 1
+      BackupRetentionPeriod: 1
+      PreferredBackupWindow: 03:00-04:00
+      PreferredMaintenanceWindow: sun:04:00-sun:05:00
+      Tags:
+        - Key: Project
+          Value: webapp-demo
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: minimal
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: aurora-mysql
+      DBClusterIdentifier: !Ref DatabaseCluster
+      DBInstanceClass: db.serverless
+      PubliclyAccessible: false
+
+Outputs:
+  ClusterEndpoint:
+    Description: Database Cluster Endpoint
+    Value: !GetAtt DatabaseCluster.Endpoint.Address
+  ClusterPort:
+    Description: Database Port
+    Value: !GetAtt DatabaseCluster.Endpoint.Port

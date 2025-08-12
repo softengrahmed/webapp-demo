@@ -1,0 +1,80 @@
+# Pipeline Specification v1-2025-08-10
+# Tier 2: Structured YAML Specification
+
+specification:
+  version: v1-2025-08-10
+  repository: github.com/softengrahmed/webapp-demo
+  generated: 2025-08-10T14:30:45Z
+  tier: minimal
+
+configuration:
+  platform:
+    type: aws-serverless
+    services:
+      - lambda
+      - api-gateway
+      - aurora-serverless-v2
+  
+  resources:
+    tier: minimal
+    memory: 256MB
+    database_capacity:
+      min: 0.5
+      max: 1.0
+    monthly_cost: $10-15
+  
+  environments:
+    - name: dev
+      auto_deploy: true
+      branch: dev
+    - name: prod
+      auto_deploy: true
+      branch: main
+      approval_required: false
+
+features:
+  security_scanning:
+    enabled: true
+    tools:
+      - codeql
+      - dependency-check
+  
+  quality_gates:
+    enabled: true
+    thresholds:
+      code_coverage: 80
+      critical_issues: 0
+  
+  retry_strategy:
+    max_attempts: 3
+    backoff: exponential
+    delay_seconds: 5
+
+pipeline_stages:
+  - name: build
+    timeout: 10m
+    retry: true
+  
+  - name: security-scan
+    timeout: 15m
+    parallel: true
+  
+  - name: quality-gates
+    timeout: 10m
+    fail_fast: true
+  
+  - name: deploy
+    timeout: 20m
+    retry: true
+  
+  - name: verify
+    timeout: 10m
+    retry: true
+  
+  - name: report
+    timeout: 5m
+    always_run: true
+  
+  - name: cleanup
+    timeout: 5m
+    always_run: true

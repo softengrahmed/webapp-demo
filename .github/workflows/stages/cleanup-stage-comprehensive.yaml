@@ -1,0 +1,298 @@
+# Cleanup Stage - Comprehensive Resource Removal
+# Removes all temporary resources created during pipeline execution
+
+name: Cleanup Stage - Comprehensive
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+        description: 'Environment to clean (dev/prod)'
+      force_cleanup:
+        required: false
+        type: boolean
+        default: false
+        description: 'Force cleanup even for production resources'
+      retention_days:
+        required: false
+        type: number
+        default: 7
+        description: 'Number of days to retain artifacts'
+
+jobs:
+  cleanup-aws-resources:
+    name: 🗑️ Clean AWS Resources
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Clean Lambda Functions
+        run: |
+          echo "🔍 Scanning for temporary Lambda functions..."
+          
+          # List and delete temporary Lambda functions
+          aws lambda list-functions \
+            --query "Functions[?contains(FunctionName, 'temp-') && contains(FunctionName, '${{ inputs.environment }}')].[FunctionName]" \
+            --output text | while read -r function; do
+            if [ ! -z "$function" ]; then
+              echo "  Deleting Lambda function: $function"
+              aws lambda delete-function --function-name "$function" || echo "  ⚠️ Failed to delete $function"
+            fi
+          done
+          
+          # Clean up Lambda layers
+          aws lambda list-layers \
+            --query "Layers[?contains(LayerName, 'temp-webapp-demo')].[LayerName,LatestMatchingVersion.Version]" \
+            --output text | while read -r layer version; do
+            if [ ! -z "$layer" ]; then
+              echo "  Deleting Lambda layer: $layer version $version"
+              aws lambda delete-layer-version --layer-name "$layer" --version-number "$version" || true
+            fi
+          done
+      
+      - name: Clean API Gateway Resources
+        run: |
+          echo "🔍 Scanning for temporary API Gateway resources..."
+          
+          # Clean up REST APIs
+          aws apigateway get-rest-apis \
+            --query "items[?contains(name, 'temp-') && contains(name, '${{ inputs.environment }}')].id" \
+            --output text | while read -r api_id; do
+            if [ ! -z "$api_id" ]; then
+              echo "  Deleting REST API: $api_id"
+              aws apigateway delete-rest-api --rest-api-id "$api_id" || true
+            fi
+          done
+          
+          # Clean up HTTP APIs (API Gateway v2)
+          aws apigatewayv2 get-apis \
+            --query "Items[?contains(Name, 'temp-') && contains(Name, '${{ inputs.environment }}')].ApiId" \
+            --output text | while read -r api_id; do
+            if [ ! -z "$api_id" ]; then
+              echo "  Deleting HTTP API: $api_id"
+              aws apigatewayv2 delete-api --api-id "$api_id" || true
+            fi
+          done
+      
+      - name: Clean Database Resources
+        run: |
+          echo "🔍 Cleaning database resources..."
+          
+          # Delete temporary database snapshots
+          aws rds describe-db-cluster-snapshots \
+            --snapshot-type manual \
+            --query "DBClusterSnapshots[?contains(DBClusterSnapshotIdentifier, 'temp-') && contains(DBClusterSnapshotIdentifier, '${{ inputs.environment }}')].[DBClusterSnapshotIdentifier]" \
+            --output text | while read -r snapshot; do
+            if [ ! -z "$snapshot" ]; then
+              echo "  Deleting DB snapshot: $snapshot"
+              aws rds delete-db-cluster-snapshot --db-cluster-snapshot-identifier "$snapshot" || true
+            fi
+          done
+          
+          # Stop temporary Aurora clusters (don't delete in case of important data)
+          aws rds describe-db-clusters \
+            --query "DBClusters[?contains(DBClusterIdentifier, 'temp-') && contains(DBClusterIdentifier, '${{ inputs.environment }}') && Status=='available'].[DBClusterIdentifier]" \
+            --output text | while read -r cluster; do
+            if [ ! -z "$cluster" ]; then
+              if [ "${{ inputs.force_cleanup }}" = "true" ]; then
+                echo "  Deleting Aurora cluster: $cluster"
+                aws rds delete-db-cluster --db-cluster-identifier "$cluster" --skip-final-snapshot || true
+              else
+                echo "  Stopping Aurora cluster: $cluster"
+                aws rds stop-db-cluster --db-cluster-identifier "$cluster" || true
+              fi
+            fi
+          done
+      
+      - name: Clean S3 Artifacts
+        run: |
+          echo "🔍 Cleaning S3 artifacts..."
+          
+          BUCKET_NAME="webapp-demo-artifacts-${{ inputs.environment }}"
+          
+          # Check if bucket exists
+          if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            # Calculate cutoff date
+            CUTOFF_DATE=$(date -u -d "${{ inputs.retention_days }} days ago" +%Y-%m-%d)
+            
+            echo "  Removing artifacts older than $CUTOFF_DATE from $BUCKET_NAME"
+            
+            # List and delete old objects
+            aws s3api list-objects-v2 \
+              --bucket "$BUCKET_NAME" \
+              --query "Contents[?LastModified<='${CUTOFF_DATE}'].Key" \
+              --output text | while read -r key; do
+              if [ ! -z "$key" ]; then
+                echo "    Deleting: $key"
+                aws s3 rm "s3://$BUCKET_NAME/$key" || true
+              fi
+            done
+            
+            # Remove all temporary prefixes
+            aws s3 rm "s3://$BUCKET_NAME/temp/" --recursive || true
+            aws s3 rm "s3://$BUCKET_NAME/test/" --recursive || true
+            
+            # Delete versioned objects if versioning is enabled
+            aws s3api list-object-versions \
+              --bucket "$BUCKET_NAME" \
+              --prefix "temp/" \
+              --query "Versions[].{Key:Key,VersionId:VersionId}" \
+              --output json | jq -r '.[] | "\(.Key) \(.VersionId)"' | while read key version; do
+              if [ ! -z "$key" ] && [ "$key" != "null" ]; then
+                echo "    Deleting versioned object: $key (version: $version)"
+                aws s3api delete-object --bucket "$BUCKET_NAME" --key "$key" --version-id "$version" || true
+              fi
+            done
+          else
+            echo "  Bucket $BUCKET_NAME does not exist"
+          fi
+      
+      - name: Clean CloudWatch Resources
+        run: |
+          echo "🔍 Cleaning CloudWatch resources..."
+          
+          # Delete old log groups
+          CUTOFF_TIMESTAMP=$(date -u -d "${{ inputs.retention_days }} days ago" +%s000)
+          
+          aws logs describe-log-groups \
+            --log-group-name-prefix "/aws/lambda/webapp-demo-${{ inputs.environment }}" \
+            --query "logGroups[?creationTime < \`${CUTOFF_TIMESTAMP}\`].logGroupName" \
+            --output text | while read -r log_group; do
+            if [ ! -z "$log_group" ] && [[ "$log_group" == *"temp"* ]]; then
+              echo "  Deleting log group: $log_group"
+              aws logs delete-log-group --log-group-name "$log_group" || true
+            fi
+          done
+          
+          # Delete temporary CloudWatch alarms
+          aws cloudwatch describe-alarms \
+            --alarm-name-prefix "temp-webapp-demo-${{ inputs.environment }}" \
+            --query "MetricAlarms[].AlarmName" \
+            --output text | while read -r alarm; do
+            if [ ! -z "$alarm" ]; then
+              echo "  Deleting CloudWatch alarm: $alarm"
+              aws cloudwatch delete-alarms --alarm-names "$alarm" || true
+            fi
+          done
+      
+      - name: Clean IAM Resources
+        if: inputs.force_cleanup == true
+        run: |
+          echo "🔍 Cleaning IAM resources..."
+          
+          # Delete temporary IAM roles
+          aws iam list-roles \
+            --query "Roles[?contains(RoleName, 'temp-webapp-demo-${{ inputs.environment }}')].[RoleName]" \
+            --output text | while read -r role; do
+            if [ ! -z "$role" ]; then
+              echo "  Processing IAM role: $role"
+              
+              # Detach policies
+              aws iam list-attached-role-policies --role-name "$role" \
+                --query "AttachedPolicies[].PolicyArn" \
+                --output text | while read -r policy_arn; do
+                if [ ! -z "$policy_arn" ]; then
+                  echo "    Detaching policy: $policy_arn"
+                  aws iam detach-role-policy --role-name "$role" --policy-arn "$policy_arn" || true
+                fi
+              done
+              
+              # Delete inline policies
+              aws iam list-role-policies --role-name "$role" \
+                --query "PolicyNames[]" \
+                --output text | while read -r policy_name; do
+                if [ ! -z "$policy_name" ]; then
+                  echo "    Deleting inline policy: $policy_name"
+                  aws iam delete-role-policy --role-name "$role" --policy-name "$policy_name" || true
+                fi
+              done
+              
+              # Delete the role
+              echo "    Deleting role: $role"
+              aws iam delete-role --role-name "$role" || true
+            fi
+          done
+      
+      - name: Generate Cleanup Report
+        run: |
+          cat > cleanup-report.json << EOF
+          {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "pipeline_id": "${{ github.run_id }}",
+            "environment": "${{ inputs.environment }}",
+            "retention_days": ${{ inputs.retention_days }},
+            "force_cleanup": ${{ inputs.force_cleanup }},
+            "resources_cleaned": {
+              "lambda_functions": "checked",
+              "api_gateways": "checked",
+              "database_snapshots": "checked",
+              "s3_artifacts": "checked",
+              "cloudwatch_logs": "checked",
+              "cloudwatch_alarms": "checked",
+              "iam_resources": "${{ inputs.force_cleanup && 'checked' || 'skipped' }}"
+            },
+            "status": "completed"
+          }
+          EOF
+          
+          echo "📊 Cleanup Report:"
+          cat cleanup-report.json | jq .
+      
+      - name: Upload Cleanup Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: cleanup-report-${{ inputs.environment }}
+          path: cleanup-report.json
+          retention-days: 30
+  
+  cleanup-github-resources:
+    name: 🧹 Clean GitHub Resources
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Clean GitHub Actions Cache
+        run: |
+          echo "🔍 Cleaning GitHub Actions cache..."
+          
+          # Clean package manager caches
+          npm cache clean --force 2>/dev/null || true
+          pip cache purge 2>/dev/null || true
+          
+          # Clean build directories
+          rm -rf node_modules/ 2>/dev/null || true
+          rm -rf .pytest_cache/ 2>/dev/null || true
+          rm -rf .gradle/ 2>/dev/null || true
+          rm -rf target/ 2>/dev/null || true
+          rm -rf build/ 2>/dev/null || true
+          rm -rf dist/ 2>/dev/null || true
+          
+          echo "✅ GitHub cache cleanup completed"
+      
+      - name: Clean Docker Resources
+        run: |
+          echo "🔍 Cleaning Docker resources..."
+          
+          # Prune all unused Docker resources
+          docker system prune -a -f --volumes || true
+          
+          # Remove specific tagged images
+          docker images --filter "reference=*temp-webapp-demo*" -q | xargs -r docker rmi -f || true
+          
+          echo "✅ Docker cleanup completed"
+      
+      - name: Final Cleanup Status
+        run: |
+          echo "========================================"
+          echo "✅ Cleanup Stage Completed Successfully"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Retention Days: ${{ inputs.retention_days }}"
+          echo "Force Cleanup: ${{ inputs.force_cleanup }}"
+          echo "========================================"
