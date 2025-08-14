@@ -1,0 +1,139 @@
+name: Cleanup Unused Resources
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM
+
+env:
+  AWS_REGION: 'us-east-1'
+  RETENTION_DAYS: 7
+
+jobs:
+  cleanup-aws:
+    name: Clean AWS Resources
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Clean old S3 staging buckets
+        run: |
+          echo "🧹 Cleaning old S3 staging buckets..."
+          
+          # List all buckets with webapp-demo-staging prefix
+          BUCKETS=$(aws s3api list-buckets \
+            --query "Buckets[?contains(Name, 'webapp-demo-staging')].Name" \
+            --output text)
+          
+          for BUCKET in $BUCKETS; do
+            # Get bucket creation date
+            CREATED=$(aws s3api list-buckets \
+              --query "Buckets[?Name=='${BUCKET}'].CreationDate" \
+              --output text)
+            
+            # Calculate age in days
+            CREATED_TIMESTAMP=$(date -d "${CREATED}" +%s)
+            CURRENT_TIMESTAMP=$(date +%s)
+            AGE_DAYS=$(( (CURRENT_TIMESTAMP - CREATED_TIMESTAMP) / 86400 ))
+            
+            if [ $AGE_DAYS -gt ${{ env.RETENTION_DAYS }} ]; then
+              echo "Deleting bucket: ${BUCKET} (${AGE_DAYS} days old)"
+              
+              # Delete all objects first
+              aws s3 rm s3://${BUCKET} --recursive
+              
+              # Delete the bucket
+              aws s3api delete-bucket --bucket ${BUCKET}
+            else
+              echo "Keeping bucket: ${BUCKET} (${AGE_DAYS} days old)"
+            fi
+          done
+      
+      - name: Clean old Lambda function versions
+        run: |
+          echo "🧹 Cleaning old Lambda function versions..."
+          
+          for ENV in staging production; do
+            FUNCTION_NAME="webapp-demo-api-${ENV}"
+            
+            # List all versions except $LATEST
+            VERSIONS=$(aws lambda list-versions-by-function \
+              --function-name ${FUNCTION_NAME} \
+              --query "Versions[?Version!='\$LATEST'].Version" \
+              --output text 2>/dev/null || echo "")
+            
+            if [ -n "$VERSIONS" ]; then
+              # Keep only the 3 most recent versions
+              OLD_VERSIONS=$(echo $VERSIONS | tr ' ' '\n' | sort -rn | tail -n +4)
+              
+              for VERSION in $OLD_VERSIONS; do
+                echo "Deleting Lambda version: ${FUNCTION_NAME}:${VERSION}"
+                aws lambda delete-function \
+                  --function-name ${FUNCTION_NAME} \
+                  --qualifier ${VERSION} \
+                  2>/dev/null || echo "Failed to delete version ${VERSION}"
+              done
+            fi
+          done
+      
+      - name: Clean CloudWatch logs
+        run: |
+          echo "🧹 Cleaning old CloudWatch logs..."
+          
+          # Get current timestamp
+          CURRENT_TIMESTAMP=$(date +%s000)
+          RETENTION_TIMESTAMP=$((CURRENT_TIMESTAMP - (${RETENTION_DAYS} * 86400000)))
+          
+          # List log groups
+          LOG_GROUPS=$(aws logs describe-log-groups \
+            --query "logGroups[?contains(logGroupName, 'webapp-demo')].logGroupName" \
+            --output text)
+          
+          for LOG_GROUP in $LOG_GROUPS; do
+            echo "Setting retention for: ${LOG_GROUP}"
+            
+            # Set retention policy
+            aws logs put-retention-policy \
+              --log-group-name ${LOG_GROUP} \
+              --retention-in-days ${RETENTION_DAYS} \
+              2>/dev/null || echo "Failed to set retention for ${LOG_GROUP}"
+          done
+      
+      - name: Generate cost report
+        run: |
+          echo "💰 Generating cost report..."
+          
+          # Get cost for the last 7 days
+          START_DATE=$(date -d "7 days ago" +%Y-%m-%d)
+          END_DATE=$(date +%Y-%m-%d)
+          
+          aws ce get-cost-and-usage \
+            --time-period Start=${START_DATE},End=${END_DATE} \
+            --granularity DAILY \
+            --metrics "UnblendedCost" \
+            --group-by Type=DIMENSION,Key=SERVICE \
+            --filter '{
+              "Dimensions": {
+                "Key": "SERVICE",
+                "Values": ["AWS Lambda", "Amazon S3", "Amazon API Gateway"]
+              }
+            }' \
+            --output table || echo "Cost data not available"
+      
+      - name: Summary
+        run: |
+          echo "✅ Cleanup complete!"
+          echo "- Old S3 staging buckets removed"
+          echo "- Old Lambda versions deleted"
+          echo "- CloudWatch log retention set to ${RETENTION_DAYS} days"
+          echo "- Cost report generated"

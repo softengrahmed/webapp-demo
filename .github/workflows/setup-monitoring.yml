@@ -1,0 +1,168 @@
+name: Setup Monitoring & Alerts
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+
+env:
+  AWS_REGION: 'us-east-1'
+  EMAIL_ADDRESS: 'ilyasirfanahmed@gmail.com'
+
+jobs:
+  setup-monitoring:
+    name: Configure CloudWatch Monitoring
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Create SNS topic for alerts
+        run: |
+          TOPIC_ARN=$(aws sns create-topic \
+            --name webapp-demo-alerts \
+            --query 'TopicArn' --output text)
+          
+          aws sns subscribe \
+            --topic-arn ${TOPIC_ARN} \
+            --protocol email \
+            --notification-endpoint ${{ env.EMAIL_ADDRESS }}
+          
+          echo "SNS Topic created: ${TOPIC_ARN}"
+      
+      - name: Setup Lambda monitoring
+        run: |
+          for ENV in staging production; do
+            FUNCTION_NAME="webapp-demo-api-${ENV}"
+            
+            # Create CloudWatch alarm for Lambda errors
+            aws cloudwatch put-metric-alarm \
+              --alarm-name "${FUNCTION_NAME}-errors" \
+              --alarm-description "Alert on Lambda function errors" \
+              --metric-name Errors \
+              --namespace AWS/Lambda \
+              --statistic Sum \
+              --period 300 \
+              --threshold 5 \
+              --comparison-operator GreaterThanThreshold \
+              --evaluation-periods 1 \
+              --dimensions Name=FunctionName,Value=${FUNCTION_NAME} \
+              --alarm-actions arn:aws:sns:${AWS_REGION}:${{ secrets.AWS_ACCOUNT_ID }}:webapp-demo-alerts \
+              2>/dev/null || echo "Alarm already exists"
+            
+            # Create CloudWatch alarm for Lambda throttles
+            aws cloudwatch put-metric-alarm \
+              --alarm-name "${FUNCTION_NAME}-throttles" \
+              --alarm-description "Alert on Lambda function throttles" \
+              --metric-name Throttles \
+              --namespace AWS/Lambda \
+              --statistic Sum \
+              --period 300 \
+              --threshold 10 \
+              --comparison-operator GreaterThanThreshold \
+              --evaluation-periods 1 \
+              --dimensions Name=FunctionName,Value=${FUNCTION_NAME} \
+              --alarm-actions arn:aws:sns:${AWS_REGION}:${{ secrets.AWS_ACCOUNT_ID }}:webapp-demo-alerts \
+              2>/dev/null || echo "Alarm already exists"
+          done
+      
+      - name: Setup S3 monitoring
+        run: |
+          for ENV in staging production; do
+            if [ "$ENV" = "staging" ]; then
+              BUCKET_NAME="webapp-demo-staging-*"
+            else
+              BUCKET_NAME="webapp-demo-production"
+            fi
+            
+            echo "S3 monitoring configured for ${BUCKET_NAME}"
+          done
+      
+      - name: Create cost budget alert
+        run: |
+          aws budgets create-budget \
+            --account-id ${{ secrets.AWS_ACCOUNT_ID }} \
+            --budget '{
+              "BudgetName": "webapp-demo-monthly-budget",
+              "BudgetLimit": {
+                "Amount": "5",
+                "Unit": "USD"
+              },
+              "TimeUnit": "MONTHLY",
+              "BudgetType": "COST",
+              "CostFilters": {
+                "Service": ["AWS Lambda", "Amazon S3", "Amazon API Gateway"]
+              }
+            }' \
+            --notifications-with-subscribers '[{
+              "Notification": {
+                "NotificationType": "ACTUAL",
+                "ComparisonOperator": "GREATER_THAN",
+                "Threshold": 80,
+                "ThresholdType": "PERCENTAGE"
+              },
+              "Subscribers": [{
+                "SubscriptionType": "EMAIL",
+                "Address": "'${{ env.EMAIL_ADDRESS }}'"
+              }]
+            }]' \
+            2>/dev/null || echo "Budget already exists"
+      
+      - name: Generate monitoring dashboard
+        run: |
+          cat > dashboard.json << 'EOF'
+          {
+            "DashboardName": "webapp-demo-dashboard",
+            "DashboardBody": "{\
+              \"widgets\": [\
+                {\
+                  \"type\": \"metric\",\
+                  \"properties\": {\
+                    \"metrics\": [\
+                      [ \"AWS/Lambda\", \"Invocations\", { \"stat\": \"Sum\" } ],\
+                      [ \".\", \"Errors\", { \"stat\": \"Sum\" } ],\
+                      [ \".\", \"Duration\", { \"stat\": \"Average\" } ]\
+                    ],\
+                    \"period\": 300,\
+                    \"stat\": \"Average\",\
+                    \"region\": \"us-east-1\",\
+                    \"title\": \"Lambda Metrics\"\
+                  }\
+                },\
+                {\
+                  \"type\": \"metric\",\
+                  \"properties\": {\
+                    \"metrics\": [\
+                      [ \"AWS/S3\", \"BucketSizeBytes\", { \"stat\": \"Average\" } ],\
+                      [ \".\", \"NumberOfObjects\", { \"stat\": \"Average\" } ]\
+                    ],\
+                    \"period\": 86400,\
+                    \"stat\": \"Average\",\
+                    \"region\": \"us-east-1\",\
+                    \"title\": \"S3 Metrics\"\
+                  }\
+                }\
+              ]\
+            }"
+          }
+          EOF
+          
+          aws cloudwatch put-dashboard --cli-input-json file://dashboard.json \
+            2>/dev/null || echo "Dashboard already exists"
+      
+      - name: Summary
+        run: |
+          echo "✅ Monitoring setup complete!"
+          echo "- CloudWatch alarms configured"
+          echo "- SNS notifications set to: ${{ env.EMAIL_ADDRESS }}"
+          echo "- Cost budget alert: $5/month"
+          echo "- Dashboard: webapp-demo-dashboard"

@@ -1,0 +1,108 @@
+{
+  "pipeline": {
+    "version": "1.0.0",
+    "generatedAt": "2025-08-14T12:00:00Z",
+    "budgetTier": "free",
+    "monthlyBudget": 5
+  },
+  "features": {
+    "securityScanning": true,
+    "qualityGates": true,
+    "multiEnvironment": true,
+    "notifications": {
+      "email": "ilyasirfanahmed@gmail.com"
+    }
+  },
+  "deployment": {
+    "platform": "aws-serverless",
+    "services": {
+      "frontend": {
+        "type": "s3-static-website",
+        "staging": {
+          "bucketPattern": "webapp-demo-staging-{buildId}"
+        },
+        "production": {
+          "bucket": "webapp-demo-production"
+        }
+      },
+      "api": {
+        "type": "lambda-function",
+        "runtime": "nodejs16.x",
+        "memory": 512,
+        "timeout": 30,
+        "staging": {
+          "functionName": "webapp-demo-api-staging"
+        },
+        "production": {
+          "functionName": "webapp-demo-api-production"
+        }
+      }
+    },
+    "regions": {
+      "primary": "us-east-1"
+    }
+  },
+  "monitoring": {
+    "cloudwatch": {
+      "enabled": true,
+      "alarms": [
+        {
+          "name": "lambda-errors",
+          "metric": "Errors",
+          "threshold": 5
+        },
+        {
+          "name": "lambda-throttles",
+          "metric": "Throttles",
+          "threshold": 10
+        }
+      ],
+      "dashboards": [
+        "webapp-demo-dashboard"
+      ]
+    },
+    "budgets": {
+      "monthly": 5,
+      "alertThreshold": 80
+    }
+  },
+  "retention": {
+    "artifacts": 7,
+    "logs": 7,
+    "stagingEnvironments": 7
+  },
+  "requiredSecrets": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_ACCOUNT_ID",
+    "EMAIL_USERNAME",
+    "EMAIL_PASSWORD"
+  ],
+  "estimatedCosts": {
+    "monthly": {
+      "lambda": {
+        "requests": "1M free tier",
+        "compute": "400,000 GB-seconds free tier",
+        "estimatedCost": "$0.00"
+      },
+      "s3": {
+        "storage": "5GB free tier",
+        "requests": "20,000 GET + 2,000 PUT free tier",
+        "estimatedCost": "$0.00"
+      },
+      "cloudwatch": {
+        "logs": "5GB free tier",
+        "metrics": "10 metrics free tier",
+        "alarms": "10 alarms free tier",
+        "estimatedCost": "$0.00"
+      },
+      "total": "$0.00 - $5.00"
+    },
+    "notes": [
+      "Costs remain within AWS Free Tier for moderate usage",
+      "Staging environments are automatically cleaned after 7 days",
+      "Production environment runs continuously",
+      "Email notifications via SMTP (requires app password)"
+    ]
+  }
+}
