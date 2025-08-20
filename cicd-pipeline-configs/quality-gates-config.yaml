@@ -1,0 +1,27 @@
+# Quality Gates Configuration
+# Minimal Tier Thresholds
+
+quality_gates:
+  code_coverage:
+    enabled: true
+    threshold: 80
+    report_format: lcov
+    fail_on_decrease: true
+  
+  code_quality:
+    max_complexity: 10
+    max_duplication: 5
+    max_technical_debt: 1h
+  
+  security:
+    max_critical: 0
+    max_high: 2
+    max_medium: 5
+  
+  performance:
+    max_response_time: 1000ms
+    min_lighthouse_score: 70
+  
+  enforcement:
+    block_deployment: true
+    require_approval_override: true

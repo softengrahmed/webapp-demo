@@ -1,0 +1,32 @@
+# Security Scanning Configuration
+# Minimal Tier Settings
+
+security:
+  scanning:
+    enabled: true
+    
+  static_analysis:
+    codeql:
+      enabled: true
+      languages: [auto-detect]
+      queries: [security-and-quality]
+    
+  dependency_scanning:
+    enabled: true
+    tools:
+      - name: dependabot
+        auto_fix: false
+        severity_threshold: high
+      
+      - name: trivy
+        scan_iac: true
+        scan_secrets: true
+    
+  quality_gates:
+    block_on_critical: true
+    allow_override: false
+    
+  reporting:
+    format: markdown
+    upload_artifacts: true
+    retention_days: 7

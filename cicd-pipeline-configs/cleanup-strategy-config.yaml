@@ -1,0 +1,127 @@
+# Cleanup Strategy Configuration
+# Defines resource cleanup policies and retention periods
+
+cleanup_strategy:
+  enabled: true
+  run_on_failure: true
+  run_on_success: true
+  
+  retention_policies:
+    artifacts:
+      dev:
+        retention_days: 7
+        cleanup_pattern: "temp-*"
+      prod:
+        retention_days: 30
+        cleanup_pattern: "temp-*"
+    
+    logs:
+      dev:
+        retention_days: 7
+        compress_after_days: 3
+      prod:
+        retention_days: 30
+        compress_after_days: 7
+    
+    database_snapshots:
+      dev:
+        retention_days: 3
+        max_snapshots: 5
+      prod:
+        retention_days: 30
+        max_snapshots: 10
+  
+  aws_resources:
+    lambda:
+      cleanup_temp_functions: true
+      temp_function_prefix: "temp-"
+      exclude_patterns:
+        - "*-prod-*"
+        - "*-critical-*"
+    
+    api_gateway:
+      cleanup_temp_apis: true
+      temp_api_prefix: "temp-"
+      cleanup_unused_deployments: true
+    
+    s3:
+      cleanup_temp_buckets: false  # Don't delete buckets, only contents
+      cleanup_old_artifacts: true
+      lifecycle_rules:
+        - prefix: "temp/"
+          expiration_days: 1
+        - prefix: "test/"
+          expiration_days: 3
+        - prefix: "artifacts/"
+          expiration_days: 30
+    
+    rds:
+      cleanup_temp_snapshots: true
+      stop_temp_clusters: true
+      delete_temp_clusters: false  # Only in force_cleanup mode
+    
+    cloudwatch:
+      cleanup_old_logs: true
+      cleanup_temp_alarms: true
+      cleanup_temp_dashboards: true
+    
+    iam:
+      cleanup_temp_roles: false  # Only in force_cleanup mode
+      cleanup_temp_policies: false  # Only in force_cleanup mode
+      temp_resource_prefix: "temp-webapp-demo-"
+  
+  github_resources:
+    actions:
+      cleanup_cache: true
+      cleanup_old_artifacts: true
+      artifact_retention_days: 7
+    
+    docker:
+      prune_images: true
+      prune_containers: true
+      prune_volumes: true
+      prune_networks: true
+    
+    workspace:
+      cleanup_temp_files: true
+      cleanup_build_dirs: true
+      directories_to_clean:
+        - "node_modules"
+        - ".pytest_cache"
+        - "target"
+        - "build"
+        - "dist"
+        - "tmp"
+  
+  notifications:
+    on_cleanup_start: false
+    on_cleanup_complete: true
+    on_cleanup_failure: true
+    channels:
+      - type: "github-comment"
+        enabled: true
+      - type: "slack"
+        enabled: false
+        webhook_url: "${SLACK_WEBHOOK_URL}"
+  
+  safety_checks:
+    require_environment_match: true
+    protect_production: true
+    confirmation_required_for:
+      - "delete_database_clusters"
+      - "delete_iam_roles"
+      - "delete_s3_buckets"
+    
+    excluded_resources:
+      # Never clean these resources
+      - "webapp-demo-prod-main-*"
+      - "webapp-demo-core-*"
+      - "*-permanent-*"
+      - "*-do-not-delete-*"
+  
+  error_handling:
+    continue_on_error: true
+    max_retry_attempts: 3
+    retry_delay_seconds: 5
+    log_errors: true
+    create_error_report: true
